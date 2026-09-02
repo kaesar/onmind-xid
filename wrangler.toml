@@ -1,0 +1,26 @@
+name = "onmind-xid"
+main = "src/index.js"
+compatibility_date = "2026-08-01"
+
+[vars]
+XID_ENV = "dev"
+
+# Cloudflare Email Service: env.MAIL.send({ to, from, subject, text })
+[[send_email]]
+name = "MAIL"
+
+# Create namespaces and paste ids:
+#   wrangler kv namespace create XID_META
+#   wrangler kv namespace create XID_USERS
+#   wrangler kv namespace create XID_FILES
+[[kv_namespaces]]
+binding = "XID_META"
+id = "REPLACE_WITH_XID_META_NAMESPACE_ID"
+
+[[kv_namespaces]]
+binding = "XID_USERS"
+id = "REPLACE_WITH_XID_USERS_NAMESPACE_ID"
+
+[[kv_namespaces]]
+binding = "XID_FILES"
+id = "REPLACE_WITH_XID_FILES_NAMESPACE_ID"

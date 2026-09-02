@@ -1,0 +1,16 @@
+{
+  "name": "onmind-xid",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --hot src/dev.js",
+    "start": "bun src/dev.js",
+    "cf:dev": "wrangler dev",
+    "cf:deploy": "wrangler deploy",
+    "kv:bootstrap": "bun scripts/bootstrap-kv.js"
+  },
+  "dependencies": {
+    "hono": "^4"
+  }
+}
