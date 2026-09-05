@@ -1,46 +1,46 @@
-# OnMind-XID — eXpress User Identity for access (OTP) + file manager
+# OnMind-XID — eXpress IDentity for access (OTP) + file manager
 
-> Alternativa expresa a **OnMind-UID** (otro proyecto robusto y privado) pensado para **OnMind-PUB** y **Cloudflare**
+> A fast alternative to **OnMind-UID** (another robust, private project) designed mainly for [**OnMind-PUB**](https://github.com/kaesar/onmind-pub) and **Cloudflare**
 
-Sustituto de **Userbase** en [**OnMind-PUB**](): un Worker (Hono) con **API homologada con Cognito** (subconjunto) para autenticación por **OTP por email** contra una **allowlist**, más un **file manager** autenticado para artículos `hide: 2`.
+A replacement for **Userbase** in [**OnMind-PUB**](https://github.com/kaesar/onmind-pub): a Worker (Hono) with a **Cognito-compatible API** (subset) for **email OTP** authentication against an **allowlist**, plus an authenticated **file manager** for `hide: 2` articles.
 
-- Corre local con **Bun** (→ SMTP **Mailpit**).
-- Despliega como **Cloudflare Worker** (→ **Cloudflare Email Service** vía binding `send_email`).
+- Runs locally with **Bun** (→ **Mailpit** SMTP).
+- Deploys as a **Cloudflare Worker** (→ **Cloudflare Email Service** via the `send_email` binding).
 
 ---
 
-## Arquitectura y decisiones clave
+## Architecture and key decisions
 
-### Qué hace este paquete
+### What this package does
 
-1. **Autentica solo emails en allowlist** con **OTP por correo** (sin contraseñas).
-2. Expone un **subconjunto de la API JSON de Cognito Identity Provider** (no AWS Cognito).
-3. Sirve un **file manager** mínimo: `GET` de recursos de artículos `hide: 2` si hay sesión válida.
-4. Sustituye Userbase en PUB (`PUB_XID`, `AsAccess.vue`, README, `task/initialize.js`).
+1. **Authenticates only allowlisted emails** with **email OTP** (no passwords).
+2. Exposes a **subset of the Cognito Identity Provider JSON API** (not AWS Cognito).
+3. Serves a minimal **file manager**: `GET` of `hide: 2` article assets with a valid session.
+4. Replaces Userbase in PUB (`PUB_XID`, `AsAccess.vue`, README, `task/initialize.js`).
 
-> **Nota de seguridad:** El HTML estático en Cloudflare Pages sigue siendo público. El gate en cliente (blur/unblur) es el mismo modelo que Userbase, **arreglado**. El file API existe y `AsAccess` **puede** pedir el markdown/cuerpo a `xid` para inyectarlo (`XID_FILES=1`). Un follow-up puede convertir las páginas `hide: 2` en stubs y rellenar el cuerpo obligatoriamente desde el Worker.
+> **Security note:** Static HTML on Cloudflare Pages is still public. The client-side gate (blur/unblur) is the same Userbase model, **fixed**. The file API exists and `AsAccess` **can** fetch the markdown/body from `xid` to inject it (`XID_FILES=1`). A follow-up may turn `hide: 2` pages into stubs and always fill the body from the Worker.
 
-### Decisiones de diseño
+### Design decisions
 
-| # | Decisión | Rationale |
+| # | Decision | Rationale |
 |---|----------|-----------|
-| 1 | **Allowlist, no signup abierto** | Superficie mínima, sin spam de OTP a terceros. Alta = editar `userbase.txt` o escribir KV. |
-| 2 | **Sin passwords** | Solo OTP de un uso (TTL ~5 min) o clave estática de **dev** `email:key` hasheada al cargar. |
-| 3 | **Subconjunto Cognito, no AWS** | `POST /` con `X-Amz-Target` + alias `/auth/otp/*`. Ops: `InitiateAuth`, `RespondToAuthChallenge`, `GetUser`, `GlobalSignOut`. `SignUp` → 403. |
-| 4 | **JWT HMAC (`XID_JWT_SECRET`), sin RefreshToken** | Access + Id (~1 h). Claims `sub` = email, `token_use` = `access` \| `id`. Menos estado; re-login OTP es barato. |
-| 5 | **Doble canal de sesión** | Pages y Worker no comparten cookies. Vue guarda sesión en `sessionStorage.xidCurrentSession`. File API usa `Authorization: Bearer` + cookie `xid_session` HttpOnly en el Worker. |
-| 6 | **Clave estática `email:key` solo en local** | Se hashea (SHA-256) al cargar; no se loguea. En prod `otpKeyHash` es opcional y **no** se sube desde dev. |
-| 7 | **Mail: Cloudflare Email Service en prod; SMTP Mailpit en local** | Binding nativo `send_email` en Worker; SMTP a Mailpit (`localhost:1025`) en `bun run dev`. Fallback: stdout si `XID_ENV=dev`. |
-| 8 | **Ficheros: FS local + KV `XID_FILES` en Worker; R2 después** | Un KV basta para unos pocos markdown `hide: 2`. |
-| 9 | **`xid/` paquete hermano de `rag/`, no dentro del tema VitePress** | Runtime distinto (Worker vs SSG); wrangler propio. |
-| 10 | **Hono `export default { fetch }`** | Un solo entrypoint para `bun --hot`, `wrangler dev` y deploy. |
+| 1 | **Allowlist, no open signup** | Minimal surface, no OTP spam to third parties. Onboarding = editing `userbase.txt` or writing KV. |
+| 2 | **No passwords** | Single-use OTP only (TTL ~5 min) or **dev**-only static `email:key` hashed on load. |
+| 3 | **Cognito subset, not AWS** | `POST /` with `X-Amz-Target` + `/auth/otp/*` aliases. Ops: `InitiateAuth`, `RespondToAuthChallenge`, `GetUser`, `GlobalSignOut`. `SignUp` → 403. |
+| 4 | **HMAC JWT (`XID_JWT_SECRET`), no RefreshToken** | Access + Id (~1 h). Claims `sub` = email, `token_use` = `access` \| `id`. Less state; OTP re-login is cheap. |
+| 5 | **Dual session channel** | Pages and the Worker don't share cookies. Vue stores the session in `sessionStorage.xidCurrentSession`. The file API uses `Authorization: Bearer` + an HttpOnly `xid_session` cookie on the Worker. |
+| 6 | **Static `email:key` for local only** | Hashed (SHA-256) on load; never logged. In prod `otpKeyHash` is optional and is **not** uploaded from dev. |
+| 7 | **Mail: Cloudflare Email Service in prod; Mailpit SMTP locally** | Native `send_email` binding on the Worker; SMTP to Mailpit (`localhost:1025`) in `bun run dev`. Fallback: stdout if `XID_ENV=dev`. |
+| 8 | **Files: local FS + `XID_FILES` KV on the Worker; R2 later** | One KV is enough for a few `hide: 2` markdown files. |
+| 9 | **`xid/` as a sibling package of `rag/`, not inside the VitePress theme** | Different runtime (Worker vs SSG); its own wrangler. |
+| 10 | **Hono `export default { fetch }`** | A single entrypoint for `bun --hot`, `wrangler dev`, and deploy. |
 
-### Arquitectura (mermaid)
+### Architecture (mermaid)
 
 ```mermaid
 flowchart LR
   subgraph pages [Cloudflare Pages - VitePress SSG]
-    Site[sitio HTML]
+    Site[HTML site]
     AsAccess[AsAccess.vue]
     Access["/access"]
   end
@@ -52,8 +52,8 @@ flowchart LR
     Files[files.js]
     Sess[session.js]
   end
-  subgraph store [Estado]
-    Txt[userbase.txt local]
+  subgraph store [State]
+    Txt[local userbase.txt]
     KVU[KV XID_USERS]
     KVO["KV otp: / sess:"]
     KVF[KV XID_FILES]
@@ -74,123 +74,123 @@ flowchart LR
   Files --> KVF
 ```
 
-### Flujo OTP (sequence)
+### OTP flow (sequence)
 
 ```mermaid
 sequenceDiagram
-  participant U as Usuario
+  participant U as User
   participant A as /access Vue
   participant W as xid Worker
   participant M as Mail (CF Email / Mailpit / console)
   U->>A: email
   A->>W: POST /auth/otp/start
   W->>W: allowlist?
-  alt email desconocido
+  alt unknown email
     W-->>A: 400 NotAuthorizedException
-  else allowlist sin otpKeyHash
-    W->>M: código 6 dígitos TTL 5 min
+  else allowlist without otpKeyHash
+    W->>M: 6-digit code TTL 5 min
     W-->>A: ChallengeName EMAIL_OTP + Session
-  else allowlist con otpKeyHash (dev)
-    W-->>A: ChallengeName EMAIL_OTP (sin mail)
+  else allowlist with otpKeyHash (dev)
+    W-->>A: ChallengeName EMAIL_OTP (no email)
   end
-  U->>A: código
+  U->>A: code
   A->>W: POST /auth/otp/verify
-  W->>W: OTP un uso o hash estático
+  W->>W: single-use OTP or static hash
   W-->>A: AuthenticationResult IdToken AccessToken
   A->>A: sessionStorage xidCurrentSession
-  A->>U: redirect al artículo
+  A->>U: redirect to the article
 ```
 
-### Runtime local vs Cloudflare
+### Local vs Cloudflare runtime
 
 | | Local (`bun run dev`) | Worker |
 |---|---|---|
-| Usuarios | `userbase.txt` (FS) | KV `XID_USERS` |
-| OTP / rate limit | `Map` in-memory **o** mismo KV si `wrangler dev` | KV prefix `otp:`, `rl:` |
-| Ficheros | `XID_FILES_ROOT` (default `xid/files`) | KV `XID_FILES` (key = path) |
-| Mail | SMTP Mailpit `XID_SMTP_HOST:XID_SMTP_PORT` (default `127.0.0.1:1025`, UI `:8025`); fallback stdout si `XID_ENV=dev` | binding `send_email` → Cloudflare Email Service (`env.MAIL.send()`); `wrangler dev` lo simula |
-| Bindings | env `.env` / `xid/.dev.vars` | `wrangler.toml` + secrets |
+| Users | `userbase.txt` (FS) | KV `XID_USERS` |
+| OTP / rate limit | In-memory `Map` **or** the same KV under `wrangler dev` | KV prefix `otp:`, `rl:` |
+| Files | `XID_FILES_ROOT` (default `xid/files`) | KV `XID_FILES` (key = path) |
+| Mail | Mailpit SMTP `XID_SMTP_HOST:XID_SMTP_PORT` (default `127.0.0.1:1025`, UI `:8025`); stdout fallback if `XID_ENV=dev` | `send_email` binding → Cloudflare Email Service (`env.MAIL.send()`); `wrangler dev` simulates it |
+| Bindings | `.env` / `xid/.dev.vars` env | `wrangler.toml` + secrets |
 
-> Detección: si existe `env.XID_USERS` (binding KV) → adapter KV; si no → txt.
+> Detection: if the `env.XID_USERS` binding (KV) exists → KV adapter; otherwise → txt.
 
-### Gate PUB (tras el fix)
+### PUB gate (after the fix)
 
 ```mermaid
 flowchart TD
   M[onMounted AsAccess] --> H{frontmatter.hide === 2?}
   H -->|no| End[noop]
-  H -->|sí| Blur[blur .VPDoc]
-  Blur --> S{xidCurrentSession.signedIn y JWT?}
+  H -->|yes| Blur[blur .VPDoc]
+  Blur --> S{xidCurrentSession.signedIn and JWT?}
   S -->|no| Go["location.replace /access?next=path"]
-  S -->|sí| Unblur[quitar blur]
+  S -->|yes| Unblur[remove blur]
   Unblur --> F{XID_FILES === 1?}
-  F -->|no| End2[contenido SSG visible]
-  F -->|sí| Get["GET xid /v1/files?path="]
-  Get --> Inj[inyectar HTML/markdown en .VPDoc]
+  F -->|no| End2[visible SSG content]
+  F -->|yes| Get["GET xid /v1/files?path="]
+  Get --> Inj[inject HTML/markdown into .VPDoc]
 ```
 
-> `hide: 1` hoy **no** tiene gate en `AsAccess` (solo `=== 2`). El MVP no inventa semántica nueva para `hide: 1`: sidebar ya lo oculta; el cuerpo SSG sigue público. Follow-up si se quiere el mismo gate.
+> `hide: 1` currently has **no** gate in `AsAccess` (only `=== 2`). The MVP doesn't invent new semantics for `hide: 1`: the sidebar already hides it; the SSG body stays public. Follow-up if the same gate is wanted.
 
 ---
 
-## Requisitos
+## Requirements
 
 - [Bun](https://bun.sh/) ≥ 1.3
-- [Cloudflare Wrangler](https://developers.cloudflare.com/workers/wrangler/) (para `wrangler dev` / deploy)
-- [Mailpit](https://mailpit.axllent.org/docs/) vía Docker (SMTP `:1025`, UI `:8025`) — recomendado para dev
+- [Cloudflare Wrangler](https://developers.cloudflare.com/workers/wrangler/) (for `wrangler dev` / deploy)
+- [Mailpit](https://mailpit.axllent.org/docs/) via Docker (SMTP `:1025`, UI `:8025`) — recommended for dev
 
 ```bash
-bun install          # instala dependencias (hono)
+bun install          # installs dependencies (hono)
 ```
 
 ---
 
-## Inicio rápido (dev local)
+## Quick start (local dev)
 
 ```bash
 cd xid
-bun run dev          # → Bun.serve en http://localhost:8787
+bun run dev          # → Bun.serve on http://localhost:8787
 ```
 
-El servidor queda escuchando en **un solo puerto: `8787`** (o `PORT`). Sin servidor extra.
+The server listens on **a single port: `8787`** (or `PORT`). No extra server.
 
-> ¿Por qué `src/dev.js`? Bun auto-sirve `export default { fetch }` (patrón Worker) en `3000`. Separamos el entrypoint: `src/index.js` es la app (export `fetch`, para Wrangler) y `src/dev.js` levanta `Bun.serve` explícito en `8787` (sin default export → un solo puerto).
+> Why `src/dev.js`? Bun auto-serves `export default { fetch }` (Worker pattern) on `3000`. We split the entrypoint: `src/index.js` is the app (exports `fetch`, for Wrangler) and `src/dev.js` starts an explicit `Bun.serve` on `8787` (no default export → a single port).
 
-### `userbase.txt` (allowlist local)
+### `userbase.txt` (local allowlist)
 
-Crea `userbase.txt` (ver `userbase.txt.example`):
+Create `userbase.txt` (see `userbase.txt.example`):
 
 ```
 alice@example.com
-bob@example.com:abc123        # :key estático dev (se hashea al cargar)
+bob@example.com:abc123        # static dev :key (hashed on load)
 ```
 
-## Probar el flujo OTP
+## Testing the OTP flow
 
-1. Arranca Mailpit (si no está): contenedor `axllent/mailpit` (SMTP `:1025`, UI `http://localhost:8025`).
-2. Arranca el servicio: `bun run dev` (o `bun run start`).
+1. Start Mailpit (if not running): `axllent/mailpit` container (SMTP `:1025`, UI `http://localhost:8025`).
+2. Start the service: `bun run dev` (or `bun run start`).
 3. `curl`:
 
 ```bash
-# 1) start → devuelve Session (y Mailpit recibe el OTP)
+# 1) start → returns Session (and Mailpit receives the OTP)
 curl -s -X POST http://localhost:8787/auth/otp/start -H 'Content-Type: application/json' \
   -d '{"email":"alice@example.com"}'
 
-# 2) Mira el código en Mailpit UI (http://localhost:8025) o API:
+# 2) Check the code in the Mailpit UI (http://localhost:8025) or API:
 curl -s http://localhost:8025/api/v1/messages
 
 # 3) verify → AccessToken/IdToken
 curl -s -X POST http://localhost:8787/auth/otp/verify -H 'Content-Type: application/json' \
   -d '{"session":"<Session>","email":"alice@example.com","code":"<6digits>"}'
 
-# 4) perfil
+# 4) profile
 curl -s http://localhost:8787/auth/me -H "Authorization: Bearer <AccessToken>"
 
 # 5) logout
 curl -s -X POST http://localhost:8787/auth/logout -H "Authorization: Bearer <AccessToken>"
 ```
 
-Para un usuario con `email:key` (`bob@example.com:abc123`), `verify` acepta el key como código (dev).
+For a user with `email:key` (`bob@example.com:abc123`), `verify` accepts the key as the code (dev).
 
 ### Health check
 
@@ -198,76 +198,108 @@ Para un usuario con `email:key` (`bob@example.com:abc123`), `verify` acepta el k
 curl -s http://localhost:8787/health   # → {"ok":true,"env":"dev"}
 ```
 
-## API (resumen)
+## API (summary)
 
-| Ruta | Método | Descripción |
+| Path | Method | Description |
 | --- | --- | --- |
 | `POST /` | `X-Amz-Target: AWSCognitoIdentityProviderService.<Op>` | `InitiateAuth`, `RespondToAuthChallenge`, `GetUser`, `GlobalSignOut`, `SignUp`(403) |
-| `POST /auth/otp/start` | alias InitiateAuth | body `{ email }` |
-| `POST /auth/otp/verify` | alias RespondToAuthChallenge | body `{ session, email, code }` |
-| `GET /auth/me` | alias GetUser | Bearer |
-| `POST /auth/logout` | alias GlobalSignOut | Bearer |
+| `POST /auth/otp/start` | InitiateAuth alias | body `{ email }` |
+| `POST /auth/otp/verify` | RespondToAuthChallenge alias | body `{ session, email, code }` |
+| `GET /auth/me` | GetUser alias | Bearer |
+| `POST /auth/logout` | GlobalSignOut alias | Bearer |
 | `GET /v1/files?path=docs/secret.md` | file manager | Bearer |
 | `GET /files/*` | file manager | Bearer |
 | `GET /health` | health | — |
 
-Errores: `400`/`403` + `{ "__type": "<Exception>", "message": "..." }` (shape Cognito).
+Errors: `400`/`403` + `{ "__type": "<Exception>", "message": "..." }` (Cognito shape).
 
-## Ficheros (dev local)
+## Entra ID facade (OIDC simulation, alternative to Cognito)
 
-Por defecto lee de `files/` bajo `xid/` (raíz configurable con `XID_FILES_ROOT`). El guard de path rechaza `..`.
+Same core (allowlist + OTP + file manager), second facade: **OAuth2 v2.0 + OIDC discovery**
+compatible with generic OIDC clients and MSAL. Verified end-to-end locally
+(discovery → `authorize` OTP → `token` with PKCE S256 → `userinfo` → rotating `refresh`).
+
+| Path | Method | Description |
+| --- | --- | --- |
+| `/.well-known/openid-configuration` | `GET` | default tenant discovery |
+| `/{tenant}/v2.0/.well-known/openid-configuration` | `GET` | discovery (`common`/`organizations`/`consumers` → configured `tid`) |
+| `/{tenant}/oauth2/v2.0/authorize` | `GET`+`POST` | email form → OTP code form → `302 redirect_uri?code=&state=` |
+| `/{tenant}/oauth2/v2.0/token` | `POST` | `grant_type=authorization_code` (with `code_verifier` if PKCE was used) or `refresh_token` (rotation, single use) |
+| `/{tenant}/discovery/v2.0/keys` | `GET` | JWKS (`RS256`, stable `kid` in prod) |
+| `/{tenant}/openid/userinfo` | `GET` | Bearer claims (`sub`=email, `oid`, `tid`, `preferred_username`) |
+| `/{tenant}/oauth2/v2.0/logout` | `GET` | revokes `jti` (denylist); `302 post_logout_redirect_uri?state=` if requested |
+
+Notes:
+
+- Entra tokens are signed **RS256** (`XID_RSA_PRIVATE_JWK`; ephemeral pair in dev). Cognito ones
+  stay HS256. `userinfo` accepts both; `GET /v1/files` accepts both (`sub`=email).
+- No `client_secret` (public clients; ignored if sent). `client_credentials` is rejected:
+  the scenario requires interactive OTP. PKCE `S256` is optional but verified if sent.
+- MSAL.js: custom authority `https://<xid-host>/<tenant>` with
+  `knownAuthorities: ["<xid-host>"]` + `validateAuthority: false`.
+- In dev `redirect_uri`/`post_logout_redirect_uri` are open; in prod
+  `XID_REDIRECT_ALLOWLIST` is required.
+
+## Files (local dev)
+
+By default it reads from `files/` under `xid/` (root configurable via `XID_FILES_ROOT`). The path guard rejects `..`.
 
 ```bash
 mkdir -p files/docs
-echo '# Secreto' > files/docs/secret.md
+echo '# Secret' > files/docs/secret.md
 curl -s http://localhost:8787/v1/files?path=docs/secret.md -H "Authorization: Bearer <AccessToken>"
 ```
 
-## Variables de entorno
+## Environment variables
 
-| Variable | Uso |
+| Variable | Usage |
 | --- | --- |
-| `PORT` | puerto local (default `8787`) |
-| `XID_JWT_SECRET` | ≥ 32 bytes; si falta en dev se genera uno efímero |
-| `XID_MAIL_FROM` | remitente (ej. `noreply@mx.tudominio.com`) |
-| `XID_SMTP_HOST` / `XID_SMTP_PORT` | SMTP dev (default `127.0.0.1:1025` → Mailpit) |
-| `XID_CORS_ORIGINS` | allowlist CORS comma-separated |
-| `XID_CLIENT_ID` | string opaco (default `pub-xid`) |
-| `XID_USERS_TXT` | ruta alternativa a `userbase.txt` |
-| `XID_FILES_ROOT` | root local de ficheros (default `./files`) |
-| `XID_ENV` | `dev` (consola fallback) \| `production` |
+| `PORT` | local port (default `8787`) |
+| `XID_JWT_SECRET` | ≥ 32 bytes; if missing in dev an ephemeral one is generated |
+| `XID_MAIL_FROM` | sender (e.g. `noreply@mx.tudominio.com`) |
+| `XID_SMTP_HOST` / `XID_SMTP_PORT` | dev SMTP (default `127.0.0.1:1025` → Mailpit) |
+| `XID_CORS_ORIGINS` | comma-separated CORS allowlist |
+| `XID_CLIENT_ID` | opaque string (default `pub-xid`) |
+| `XID_USERS_TXT` | alternative path to `userbase.txt` |
+| `XID_FILES_ROOT` | local files root (default `./files`) |
+| `XID_ENV` | `dev` (console fallback) \| `production` |
+| `XID_RSA_PRIVATE_JWK` | RSA private JWK (`bun scripts/gen-rsa-jwk.js`); ephemeral in dev if missing |
+| `XID_TENANT_ID` | `tid` for `common`/`organizations`/`consumers` (default `xid`) |
+| `XID_REDIRECT_ALLOWLIST` | allowed `redirect_uri`/`post_logout_redirect_uri` (comma-separated, trailing `*` = prefix); open in dev if empty, denied in prod |
 
-## Deploy Cloudflare (resumen)
+## Cloudflare deploy (summary)
 
 ```bash
 cd xid
-npx wrangler kv namespace create XID_META      # pegar IDs en wrangler.toml
+npx wrangler kv namespace create XID_META      # paste IDs into wrangler.toml
 npx wrangler kv namespace create XID_USERS
 npx wrangler kv namespace create XID_FILES
 npx wrangler secret put XID_JWT_SECRET         # openssl rand -hex 32
+bun scripts/gen-rsa-jwk.js --kid xid-1 > jwk.json  # do NOT version
+npx wrangler secret put XID_RSA_PRIVATE_JWK < jwk.json && rm jwk.json
 npx wrangler secret put XID_MAIL_FROM
 npx wrangler secret put XID_CORS_ORIGINS
-bun scripts/bootstrap-kv.js --apply            # userbase.txt → KV XID_USERS (sin --include-dev-keys en prod)
+bun scripts/bootstrap-kv.js --apply            # userbase.txt → KV XID_USERS (without --include-dev-keys in prod)
 npx wrangler deploy
 ```
 
-Requisito de envío: dominio onboardado en **Cloudflare Email Service** (SPF/DKIM/DMARC) y cuenta Workers en plan **Paid** para destinatarios arbitrarios.
+Sending requirement: domain onboarded in **Cloudflare Email Service** (SPF/DKIM/DMARC) and a **Paid** Workers plan for arbitrary recipients.
 
-## Integración PUB
+## PUB integration
 
-En `sites/<sitio>/.env`:
+In `sites/<site>/.env`:
 
 ```
 PUB_XID=1
-XID_URL=http://localhost:8787      # o el Worker desplegado
+XID_URL=http://localhost:8787      # or the deployed Worker
 XID_CLIENT_ID=pub-xid
 XID_FILES=0
 ```
 
-`AsAccess.vue` desbloquea `hide: 2` con sesión; sin sesión redirige a `/access?next=`. `XID_FILES=1` también trae el cuerpo al Worker.
+`AsAccess.vue` unlocks `hide: 2` with a session; without a session it redirects to `/access?next=`. `XID_FILES=1` also fetches the body to the Worker.
 
 ---
 
-## Estado
+## Status
 
-Implementado y verificado en local (Bun + Mailpit): flujo OTP end-to-end, tokens JWT, `/auth/me`, files (200/401/404/traversal 400), CORS, build PUB con `PUB_XID=1`. **Pendiente** la configuración de deploy (Cloudflare Email, KV IDs, secrets).
+Implemented and verified locally (Bun + Mailpit): end-to-end OTP flow, JWT tokens, `/auth/me`, files (200/401/404/traversal 400), CORS, PUB build with `PUB_XID=1`. Deploy configuration still **pending** (Cloudflare Email, KV IDs, secrets).

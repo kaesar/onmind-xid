@@ -1,5 +1,7 @@
 import path from 'node:path'
 import { verifyAccessToken } from './session.js'
+import { verifyRs256 } from './entra-keys.js'
+import { kvGet } from './kv.js'
 import { getUser } from './users.js'
 
 // GET autenticado de ficheros de artículos hide:2.
@@ -36,7 +38,7 @@ export async function getFileContent(env, request, rawPath) {
   if (!rel) return { status: 400, body: { error: 'invalid path' } }
 
   const token = bearerOrCookie(request)
-  const payload = token ? await verifyAccessToken(env, token) : null
+  const payload = token ? await verifyAnyAccessToken(env, token) : null
   if (!payload) return { status: 401, body: { error: 'unauthorized' } }
 
   const user = await getUser(env, payload.sub)
@@ -64,6 +66,21 @@ export async function getFileContent(env, request, rawPath) {
     if (err && err.code === 'ENOENT') return { status: 404, body: { error: 'not_found' } }
     throw err
   }
+}
+
+// Acepta access tokens de ambas fachadas: HS256 (Cognito) y RS256 (Entra).
+// En ambos casos sub = email y se respeta la denylist de logout (sess:jti).
+async function verifyAnyAccessToken(env, token) {
+  try {
+    const hs = await verifyAccessToken(env, token)
+    if (hs) return hs
+  } catch {
+    // sin secreto HMAC válido: intenta RS256 igualmente
+  }
+  const rs = await verifyRs256(env, token)
+  if (!rs || rs.sub == null) return null
+  if (rs.jti && (await kvGet(env, `sess:${rs.jti}`))) return null
+  return rs
 }
 
 function bearerOrCookie(request) {

@@ -86,7 +86,7 @@ export async function issueTokens(env, email, clientId) {
   const secret = requireSecret(env)
   const now = Math.floor(Date.now() / 1000)
   const exp = now + ACCESS_TOKEN_TTL
-  const jti = crypto.randomUXID()
+  const jti = crypto.randomUUID()
   const access = await signToken(
     {
       sub: email,
@@ -130,7 +130,7 @@ export async function issueOtpSession(env, email) {
       iss: ISS,
       iat: now,
       exp: now + OTP_SESSION_TTL,
-      jti: crypto.randomUXID(),
+      jti: crypto.randomUUID(),
     },
     secret
   )

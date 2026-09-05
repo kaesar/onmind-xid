@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { initiateAuth, respondToAuthChallenge, getUserOp, globalSignOut, signUpStub } from './cognito.js'
 import { getFileContent } from './files.js'
+import { registerEntra } from './entra.js'
 
 const app = new Hono()
 
@@ -59,6 +60,11 @@ app.get('/', (c) => {
       'POST /auth/logout',
       'GET /v1/files?path=',
       'POST / (Cognito X-Amz-Target)',
+      'GET /{tenant}/v2.0/.well-known/openid-configuration (Entra)',
+      'GET|POST /{tenant}/oauth2/v2.0/authorize (Entra OTP)',
+      'POST /{tenant}/oauth2/v2.0/token (Entra)',
+      'GET /{tenant}/discovery/v2.0/keys (Entra JWKS)',
+      'GET /{tenant}/openid/userinfo (Entra)',
     ],
   })
 })
@@ -167,6 +173,9 @@ app.get('/v1/files', (c) => {
 })
 
 app.get('/files/*', (c) => sendFile(c, c.req.path.replace(/^\/files\//, '')))
+
+// ---------------- Fachada Entra ID (simulación OIDC sobre el mismo core) ----------------
+registerEntra(app)
 
 // ---------------- Error handling ----------------
 app.onError((err, c) => {
