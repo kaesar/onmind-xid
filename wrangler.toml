@@ -13,6 +13,7 @@ name = "MAIL"
 #   wrangler kv namespace create XID_META
 #   wrangler kv namespace create XID_USERS
 #   wrangler kv namespace create XID_FILES
+#   wrangler kv namespace create XID_CLIENTS
 [[kv_namespaces]]
 binding = "XID_META"
 id = "REPLACE_WITH_XID_META_NAMESPACE_ID"
@@ -24,3 +25,7 @@ id = "REPLACE_WITH_XID_USERS_NAMESPACE_ID"
 [[kv_namespaces]]
 binding = "XID_FILES"
 id = "REPLACE_WITH_XID_FILES_NAMESPACE_ID"
+
+[[kv_namespaces]]
+binding = "XID_CLIENTS"
+id = "REPLACE_WITH_XID_CLIENTS_NAMESPACE_ID"

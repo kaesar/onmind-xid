@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { initiateAuth, respondToAuthChallenge, getUserOp, globalSignOut, signUpStub } from './cognito.js'
+import { initiateAuth, respondToAuthChallenge, getUserOp, globalSignOut, signUpStub, oauthToken } from './cognito.js'
 import { getFileContent } from './files.js'
 import { registerEntra } from './entra.js'
 
@@ -60,6 +60,7 @@ app.get('/', (c) => {
       'POST /auth/logout',
       'GET /v1/files?path=',
       'POST / (Cognito X-Amz-Target)',
+      'POST /oauth2/token (Cognito client_credentials B2B)',
       'GET /{tenant}/v2.0/.well-known/openid-configuration (Entra)',
       'GET|POST /{tenant}/oauth2/v2.0/authorize (Entra OTP)',
       'POST /{tenant}/oauth2/v2.0/token (Entra)',
@@ -155,6 +156,9 @@ app.post('/auth/otp/verify', (c) =>
 app.get('/auth/me', (c) => callAuth(c, (env, ctx) => getUserOp(env, ctx, {})))
 
 app.post('/auth/logout', (c) => callAuth(c, (env, ctx, body) => globalSignOut(env, ctx, tolerantBody(body))))
+
+// ---------------- OAuth hosted-UI style (B2B client_credentials, forma Cognito) ----------------
+app.post('/oauth2/token', (c) => oauthToken(c))
 
 // ---------------- Ficheros (Iteration 2) ----------------
 async function sendFile(c, rel) {

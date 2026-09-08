@@ -14,9 +14,10 @@
 //
 // Desviaciones documentadas vs Entra real:
 //   - sub = email (estable); además oid = sha256(email), tid, preferred_username.
-//   - Sin client_secret (clientes públicos); si llega se ignora.
+//   - interactivo = clientes públicos (sin secret); B2B = client_credentials con
+//     secret (registro clients.txt / KV XID_CLIENTS, sub = client_id, sin id_token).
 //   - PKCE S256 opcional pero verificado cuando el authorize lo envió.
-//   - Sin SAML/WS-Fed, device_code ni client_credentials (se rechaza con hint).
+//   - Sin SAML/WS-Fed ni device_code.
 
 import { kvGet, kvPut, kvDelete } from './kv.js'
 import { getUser } from './users.js'
@@ -25,6 +26,16 @@ import { verifyOtpSession, issueOtpSession, verifyAccessToken, denyJti } from '.
 import { sendMail, makeOtpMessage } from './mail.js'
 import { normalizeEmail, isValidEmail, maskEmail, sha256Hex, sleep } from './util.js'
 import { signRs256, verifyRs256, getPublicJwk } from './entra-keys.js'
+import {
+  getClient,
+  verifyClientSecret,
+  parseScopes,
+  scopesAllowed,
+  checkM2mRateLimit,
+  ipOf,
+  parseBasicAuth,
+  issueMachineToken,
+} from './clients.js'
 
 const AUTH_CODE_TTL = 600 // s (10 min, un solo uso)
 const REFRESH_TTL = 86400 // s (24 h, rotación en cada uso)
@@ -180,7 +191,7 @@ function discoveryDoc(origin, tenant) {
     token_endpoint_auth_methods_supported: ['none', 'client_secret_post', 'client_secret_basic'],
     claims_supported: ['sub', 'oid', 'tid', 'email', 'email_verified', 'preferred_username', 'name', 'iss', 'aud', 'exp', 'iat', 'nonce'],
     code_challenge_methods_supported: ['S256', 'plain'],
-    grant_types_supported: ['authorization_code', 'refresh_token'],
+    grant_types_supported: ['authorization_code', 'refresh_token', 'client_credentials'],
   }
 }
 
@@ -406,9 +417,36 @@ export async function handleToken(c, tenantRaw) {
   }
 
   if (grant === 'client_credentials') {
-    return c.json({ error: 'invalid_grant', error_description: 'client_credentials no soportado: usa authorization_code con OTP (flujo interactivo)' }, 400)
+    // B2B máquina-a-máquina: sin usuario, sin OTP. Auth por Basic o body.
+    const basic = parseBasicAuth(c.req.raw)
+    const clientId = body.client_id || basic?.clientId || ''
+    const clientSecret = body.client_secret || basic?.clientSecret || ''
+    const client = await getClient(env, clientId)
+    if (!(await checkM2mRateLimit(env, clientId || 'unknown', ipOf(c.req.raw)))) {
+      return c.json({ error: 'invalid_grant', error_description: 'attempt limit exceeded' }, 400)
+    }
+    if (!client || !(await verifyClientSecret(client, clientSecret))) {
+      return c.json({ error: 'invalid_client', error_description: 'invalid client credentials' }, 401)
+    }
+    const requested = body.scope ? parseScopes(body.scope) : [...client.scopes]
+    if (body.scope && !scopesAllowed(requested, client.scopes)) {
+      return c.json({ error: 'invalid_scope', error_description: 'requested scope exceeds grant' }, 400)
+    }
+    const origin = originOf(c.req.raw)
+    const issued = await issueMachineToken(env, {
+      clientId: client.clientId,
+      scope: requested.join(' '),
+      iss: `${origin}/${tenant}`,
+      tid: effectiveTid(env, tenant),
+    })
+    return c.json({
+      token_type: 'Bearer',
+      scope: issued.scope,
+      expires_in: issued.expiresIn,
+      access_token: issued.token,
+    })
   }
-  return c.json({ error: 'unsupported_grant_type', error_description: 'usa authorization_code o refresh_token' }, 400)
+  return c.json({ error: 'unsupported_grant_type', error_description: 'usa authorization_code, refresh_token o client_credentials' }, 400)
 }
 
 async function bearerPayload(env, request) {
@@ -431,7 +469,12 @@ export async function handleUserinfo(c) {
     return c.json({ error: 'invalid_token', error_description: 'missing or invalid access token' }, 401)
   }
   const user = await getUser(env, payload.sub)
-  if (!user) return c.json({ error: 'invalid_token', error_description: 'user no longer authorized' }, 401)
+  if (!user) {
+    if (payload.client_id && payload.client_id === payload.sub && (await getClient(env, payload.sub))) {
+      return c.json({ error: 'invalid_token', error_description: 'machine tokens carry no user identity (present access_token to resource APIs)' }, 401)
+    }
+    return c.json({ error: 'invalid_token', error_description: 'user no longer authorized' }, 401)
+  }
   const email = payload.sub
   const oid = payload.oid || (await sha256Hex(email.toLowerCase()))
   return c.json({

@@ -8,7 +8,8 @@
     "start": "bun src/dev.js",
     "cf:dev": "wrangler dev",
     "cf:deploy": "wrangler deploy",
-    "kv:bootstrap": "bun scripts/bootstrap-kv.js"
+    "kv:bootstrap": "bun scripts/bootstrap-kv.js",
+    "smoke": "bun scripts/smoke.js"
   },
   "dependencies": {
     "hono": "^4"

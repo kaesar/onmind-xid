@@ -207,6 +207,7 @@ curl -s http://localhost:8787/health   # → {"ok":true,"env":"dev"}
 | `POST /auth/otp/verify` | RespondToAuthChallenge alias | body `{ session, email, code }` |
 | `GET /auth/me` | GetUser alias | Bearer |
 | `POST /auth/logout` | GlobalSignOut alias | Bearer |
+| `POST /oauth2/token` | hosted-UI style `client_credentials` (B2B) | Basic or body `client_id`+`client_secret` |
 | `GET /v1/files?path=docs/secret.md` | file manager | Bearer |
 | `GET /files/*` | file manager | Bearer |
 | `GET /health` | health | — |
@@ -233,12 +234,39 @@ Notes:
 
 - Entra tokens are signed **RS256** (`XID_RSA_PRIVATE_JWK`; ephemeral pair in dev). Cognito ones
   stay HS256. `userinfo` accepts both; `GET /v1/files` accepts both (`sub`=email).
-- No `client_secret` (public clients; ignored if sent). `client_credentials` is rejected:
-  the scenario requires interactive OTP. PKCE `S256` is optional but verified if sent.
+- Interactive flow = public clients (no secret; ignored if sent). B2B = `client_credentials`
+  with secret (see below). PKCE `S256` is optional but verified if sent.
 - MSAL.js: custom authority `https://<xid-host>/<tenant>` with
   `knownAuthorities: ["<xid-host>"]` + `validateAuthority: false`.
 - In dev `redirect_uri`/`post_logout_redirect_uri` are open; in prod
   `XID_REDIRECT_ALLOWLIST` is required.
+
+## B2B machine-to-machine (`client_credentials`, `client_id`-managed)
+
+Pure service-to-service without users or OTP, on both facades over one shared registry
+(`src/clients.js`): local `clients.txt` → `client_id:client_secret:scope1,scope2`
+(see `clients.txt.example`), KV `XID_CLIENTS` in prod (**hashes only**, never plaintext secrets).
+
+```bash
+echo 'svc-billing:$(openssl rand -base64 32):files.read' >> clients.txt
+curl -s -X POST http://localhost:8787/oauth2/token \
+  -u svc-billing:<secret> --data-urlencode 'grant_type=client_credentials'
+# → {"access_token":"eyJ...","expires_in":3600,"token_type":"Bearer","scope":"files.read"}
+```
+
+| Path | Grant | Auth | Response |
+| --- | --- | --- | --- |
+| `POST /oauth2/token` (Cognito shape) | `client_credentials` | `Basic` or body | `{access_token, expires_in, token_type, scope}`; errors `{error, error_description}` (+ `WWW-Authenticate` on 401) |
+| `POST /{tenant}/oauth2/v2.0/token` (Entra shape) | `client_credentials` | `Basic` or body | `{access_token, expires_in, token_type, scope}` (no `id_token`/`refresh_token`) |
+
+Notes:
+
+- Machine tokens are **RS256**, `sub` = `client_id` (+ `client_id`, `token_use=access`, `scp`/`scope`), ~1 h.
+  `GET /v1/files` accepts them only with the `files.read` scope **and** a registered client
+  holding it (user allowlist path unchanged); `userinfo` rejects them (no user identity).
+- Requested `scope` must be a subset of the client's grant (`invalid_scope` otherwise);
+  omitting `scope` grants the full set. Logout revokes via `jti` denylist, same as users.
+- Brute-force guard: rate limit per `client_id` + IP on both token endpoints.
 
 ## Files (local dev)
 
@@ -261,6 +289,7 @@ curl -s http://localhost:8787/v1/files?path=docs/secret.md -H "Authorization: Be
 | `XID_CORS_ORIGINS` | comma-separated CORS allowlist |
 | `XID_CLIENT_ID` | opaque string (default `pub-xid`) |
 | `XID_USERS_TXT` | alternative path to `userbase.txt` |
+| `XID_CLIENTS_TXT` | alternative path to `clients.txt` |
 | `XID_FILES_ROOT` | local files root (default `./files`) |
 | `XID_ENV` | `dev` (console fallback) \| `production` |
 | `XID_RSA_PRIVATE_JWK` | RSA private JWK (`bun scripts/gen-rsa-jwk.js`); ephemeral in dev if missing |
@@ -274,12 +303,14 @@ cd xid
 npx wrangler kv namespace create XID_META      # paste IDs into wrangler.toml
 npx wrangler kv namespace create XID_USERS
 npx wrangler kv namespace create XID_FILES
+npx wrangler kv namespace create XID_CLIENTS
 npx wrangler secret put XID_JWT_SECRET         # openssl rand -hex 32
 bun scripts/gen-rsa-jwk.js --kid xid-1 > jwk.json  # do NOT version
 npx wrangler secret put XID_RSA_PRIVATE_JWK < jwk.json && rm jwk.json
 npx wrangler secret put XID_MAIL_FROM
 npx wrangler secret put XID_CORS_ORIGINS
 bun scripts/bootstrap-kv.js --apply            # userbase.txt → KV XID_USERS (without --include-dev-keys in prod)
+bun scripts/bootstrap-clients.js --apply       # clients.txt → KV XID_CLIENTS (hashes only, never secrets)
 npx wrangler deploy
 ```
 
@@ -302,4 +333,4 @@ XID_FILES=0
 
 ## Status
 
-Implemented and verified locally (Bun + Mailpit): end-to-end OTP flow, JWT tokens, `/auth/me`, files (200/401/404/traversal 400), CORS, PUB build with `PUB_XID=1`. Deploy configuration still **pending** (Cloudflare Email, KV IDs, secrets).
+Implemented and verified locally (Bun + Mailpit): end-to-end OTP flow, JWT tokens, `/auth/me`, files (200/401/404/traversal 400), CORS, PUB build with `PUB_XID=1`. Reproducible smoke suite: `bun run smoke` (23 checks in-process, no ports). Deploy configuration still **pending** (Cloudflare Email, KV IDs, secrets).

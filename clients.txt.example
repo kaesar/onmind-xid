@@ -1,0 +1,18 @@
+# clients.txt — machine clients B2B / client_credentials (NOT versioned)
+#
+# Format:
+#   client_id:client_secret:scope1,scope2
+#
+# - client_id: [A-Za-z0-9._-] max 64 (e.g. billing-svc)
+# - client_secret: high entropy in prod (openssl rand -base64 32).
+#   Hashed with salt on load; never logged. Unlike userbase.txt, the plain
+#   secret is never uploaded anywhere (bootstrap uploads hashes only).
+# - scopes: comma/space separated. Minimum for the file API: files.read
+#
+# Comments (#) and blank lines are ignored.
+#
+# Examples:
+# svc-billing:REPLACE_WITH_SECRET:files.read
+# svc-etl:REPLACE_WITH_SECRET:files.read
+
+svc-demo:dev-secret-change-me:files.read

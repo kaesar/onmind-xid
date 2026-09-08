@@ -3,6 +3,7 @@ import { verifyAccessToken } from './session.js'
 import { verifyRs256 } from './entra-keys.js'
 import { kvGet } from './kv.js'
 import { getUser } from './users.js'
+import { getClient, FILES_READ_SCOPE } from './clients.js'
 
 // GET autenticado de ficheros de artículos hide:2.
 // Auth: Bearer o cookie `xid_session`. Path seguro (rechaza .., absolutos, \).
@@ -42,7 +43,9 @@ export async function getFileContent(env, request, rawPath) {
   if (!payload) return { status: 401, body: { error: 'unauthorized' } }
 
   const user = await getUser(env, payload.sub)
-  if (!user) return { status: 403, body: { error: 'forbidden' } }
+  if (!user && !(await canMachineRead(env, payload))) {
+    return { status: 403, body: { error: 'forbidden' } }
+  }
 
   const kv = env?.XID_FILES
   if (kv && typeof kv.get === 'function') {
@@ -81,6 +84,20 @@ async function verifyAnyAccessToken(env, token) {
   if (!rs || rs.sub == null) return null
   if (rs.jti && (await kvGet(env, `sess:${rs.jti}`))) return null
   return rs
+}
+
+// B2B: cliente máquina registrado cuyo token porta el scope files.read.
+// El token máquina se distingue por client_id === sub (sin identidad de usuario).
+function tokenScopes(payload) {
+  const raw = payload.scp || payload.scope || ''
+  return String(raw).split(/[\s,]+/).map((s) => s.trim()).filter(Boolean)
+}
+
+async function canMachineRead(env, payload) {
+  if (!payload?.client_id || payload.client_id !== payload.sub) return false
+  if (!tokenScopes(payload).includes(FILES_READ_SCOPE)) return false
+  const client = await getClient(env, payload.sub)
+  return !!(client && (client.scopes || []).includes(FILES_READ_SCOPE))
 }
 
 function bearerOrCookie(request) {

@@ -4,6 +4,16 @@ import { issueOtpSession, issueTokens, denyJti, verifyAccessToken, verifyOtpSess
 import { startOtp, verifyOtp, otpAttemptsLeft } from './otp.js'
 import { sendMail, makeOtpMessage } from './mail.js'
 import { maskEmail, sleep, normalizeEmail } from './util.js'
+import {
+  getClient,
+  verifyClientSecret,
+  parseScopes,
+  scopesAllowed,
+  checkM2mRateLimit,
+  ipOf as m2mIpOf,
+  parseBasicAuth,
+  issueMachineToken,
+} from './clients.js'
 
 // Subconjunto de Cognito Identity Provider + alias REST (ver xid/PLAN.md).
 // Contrato: los handlers devuelven o bien la respuesta JSON de éxito, o bien
@@ -115,6 +125,60 @@ export async function globalSignOut(env, ctx, body) {
 
 export function signUpStub(env, ctx) {
   return { __type: 'NotAuthorizedException', message: 'Sign up is not allowed.', status: 403 }
+}
+
+// OAuth hosted-UI style token endpoint (B2B): POST /oauth2/token.
+// Como el Cognito real, NO va por X-Amz-Target: Basic (o body) + solo
+// grant_type=client_credentials. Respuesta y errores en forma OAuth (minúsculas).
+// Requiere Hono `c` (status + headers como WWW-Authenticate), no el shape IdP.
+export async function oauthToken(c) {
+  const env = c.env || {}
+  const ct = c.req.header('content-type') || ''
+  let body = {}
+  if (ct.includes('application/json')) {
+    body = await c.req.json().catch(() => ({}))
+  } else {
+    try {
+      const parsed = await c.req.parseBody()
+      for (const [k, v] of Object.entries(parsed || {})) body[k] = typeof v === 'string' ? v : String(v)
+    } catch {
+      body = {}
+    }
+  }
+  const oauthError = (error, description, status = 400, headers = {}) =>
+    c.json({ error, error_description: description }, status, headers);
+
+  if (body.grant_type !== 'client_credentials') {
+    return oauthError('unsupported_grant_type', 'only client_credentials is supported here')
+  }
+  const basic = parseBasicAuth(c.req.raw)
+  const clientId = body.client_id || basic?.clientId || ''
+  const clientSecret = body.client_secret || basic?.clientSecret || ''
+  const client = await getClient(env, clientId)
+  if (!(await checkM2mRateLimit(env, clientId || 'unknown', m2mIpOf(c.req.raw)))) {
+    return oauthError('invalid_grant', 'attempt limit exceeded')
+  }
+  if (!client || !(await verifyClientSecret(client, clientSecret))) {
+    return oauthError('invalid_client', 'invalid client credentials', 401, {
+      'WWW-Authenticate': 'Basic realm="xid"',
+    })
+  }
+  const requested = body.scope ? parseScopes(body.scope) : [...client.scopes]
+  if (body.scope && !scopesAllowed(requested, client.scopes)) {
+    return oauthError('invalid_scope', 'requested scope exceeds grant')
+  }
+  const iss = new URL(c.req.raw.url).origin
+  const issued = await issueMachineToken(env, {
+    clientId: client.clientId,
+    scope: requested.join(' '),
+    iss,
+  })
+  return c.json({
+    access_token: issued.token,
+    expires_in: issued.expiresIn,
+    token_type: 'Bearer',
+    scope: issued.scope,
+  })
 }
 
 export { clientIdFrom, bearerToken }
