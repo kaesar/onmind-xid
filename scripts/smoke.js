@@ -88,7 +88,13 @@ try {
     code_challenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM', code_challenge_method: 'S256',
   }
   r = await call('GET', '/xid/oauth2/v2.0/authorize', { query: '?' + new URLSearchParams(OAUTH).toString() })
-  check('authorize form', r.status === 200 && r.text.includes('Iniciar sesi'), '')
+  check('authorize form (en default)', r.status === 200 && r.text.includes('Sign in') && r.text.includes('lang="en"'), '')
+  r = await call('GET', '/xid/oauth2/v2.0/authorize', { query: '?' + new URLSearchParams({ ...OAUTH, ui_locales: 'es' }).toString() })
+  check('authorize form es (ui_locales)', r.status === 200 && r.text.includes('Iniciar sesión') && r.text.includes('lang="es"'), '')
+  r = await call('GET', '/xid/oauth2/v2.0/authorize', {
+    query: '?' + new URLSearchParams(OAUTH).toString(), headers: { 'Accept-Language': 'es-ES,es;q=0.9' },
+  })
+  check('authorize form es (accept-language)', r.status === 200 && r.text.includes('Enviar código'), '')
   r = await call('POST', '/xid/oauth2/v2.0/authorize', { form: { ...OAUTH, email: 'bob@example.com' } })
   const otpSess = /name="otp_session" value="([^"]+)"/.exec(r.text)?.[1]
   check('authorize otp step', r.status === 200 && !!otpSess, r.text.slice(0, 80))

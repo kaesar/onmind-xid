@@ -1,11 +1,11 @@
-# OnMind-XID — eXpress IDentity for access (OTP) + file manager
+# OnMind-XID — eXpress IDentity for access
 
-> A fast alternative to **OnMind-UID** (another robust, private project) designed mainly for [**OnMind-PUB**](https://github.com/kaesar/onmind-pub) and **Cloudflare**
+> A simple alternative to **OnMind-UID** (another private project) designed mainly for [**OnMind-PUB**](https://github.com/kaesar/onmind-pub) and **Cloudflare** (containers as alternative).
 
-A replacement for **Userbase** in [**OnMind-PUB**](https://github.com/kaesar/onmind-pub): a Worker (Hono) with a **Cognito-compatible API** (subset) for **email OTP** authentication against an **allowlist**, plus an authenticated **file manager** for `hide: 2` articles.
+This is an **IdP/IAM** for [**OnMind-PUB**](https://github.com/kaesar/onmind-pub). Thinked as worker (in **Hono**) with a **Cognito-compatible API** (subset, even **Entra ID compatible**) for **email OTP** authentication against an **allowlist**, plus an authenticated **file manager** for `hide: 2` articles. Besides could be used with WebApps, AI and machine to machine (M2M/B2B) for API's.
 
-- Runs locally with **Bun** (→ **Mailpit** SMTP).
-- Deploys as a **Cloudflare Worker** (→ **Cloudflare Email Service** via the `send_email` binding).
+- Runs locally with **Bun** (to test use **Mailpit** for SMTP).
+- Deploys as a **Cloudflare Worker** (and **Cloudflare Email Service** via the `send_email` binding).
 
 ---
 
@@ -26,7 +26,7 @@ A replacement for **Userbase** in [**OnMind-PUB**](https://github.com/kaesar/onm
 |---|----------|-----------|
 | 1 | **Allowlist, no open signup** | Minimal surface, no OTP spam to third parties. Onboarding = editing `userbase.txt` or writing KV. |
 | 2 | **No passwords** | Single-use OTP only (TTL ~5 min) or **dev**-only static `email:key` hashed on load. |
-| 3 | **Cognito subset, not AWS** | `POST /` with `X-Amz-Target` + `/auth/otp/*` aliases. Ops: `InitiateAuth`, `RespondToAuthChallenge`, `GetUser`, `GlobalSignOut`. `SignUp` → 403. |
+| 3 | **Cognito subset, not AWS** | `POST /` with `X-Amz-Target` + `/auth/otp/*` aliases. Ops: `InitiateAuth`, `RespondToAuthChallenge`, `GetUser`, `GlobalSignOut`. `SignUp` for 403. |
 | 4 | **HMAC JWT (`XID_JWT_SECRET`), no RefreshToken** | Access + Id (~1 h). Claims `sub` = email, `token_use` = `access` \| `id`. Less state; OTP re-login is cheap. |
 | 5 | **Dual session channel** | Pages and the Worker don't share cookies. Vue stores the session in `sessionStorage.xidCurrentSession`. The file API uses `Authorization: Bearer` + an HttpOnly `xid_session` cookie on the Worker. |
 | 6 | **Static `email:key` for local only** | Hashed (SHA-256) on load; never logged. In prod `otpKeyHash` is optional and is **not** uploaded from dev. |
@@ -108,10 +108,10 @@ sequenceDiagram
 | Users | `userbase.txt` (FS) | KV `XID_USERS` |
 | OTP / rate limit | In-memory `Map` **or** the same KV under `wrangler dev` | KV prefix `otp:`, `rl:` |
 | Files | `XID_FILES_ROOT` (default `xid/files`) | KV `XID_FILES` (key = path) |
-| Mail | Mailpit SMTP `XID_SMTP_HOST:XID_SMTP_PORT` (default `127.0.0.1:1025`, UI `:8025`); stdout fallback if `XID_ENV=dev` | `send_email` binding → Cloudflare Email Service (`env.MAIL.send()`); `wrangler dev` simulates it |
+| Mail | Mailpit SMTP `XID_SMTP_HOST:XID_SMTP_PORT` (default `127.0.0.1:1025`, UI `:8025`); stdout fallback if `XID_ENV=dev` | `send_email` binding with Cloudflare Email Service (`env.MAIL.send()`); `wrangler dev` simulates it |
 | Bindings | `.env` / `xid/.dev.vars` env | `wrangler.toml` + secrets |
 
-> Detection: if the `env.XID_USERS` binding (KV) exists → KV adapter; otherwise → txt.
+> Detection: if the `env.XID_USERS` binding (KV) exists uses KV adapter, otherwise uses txt.
 
 ### PUB gate (after the fix)
 
@@ -149,12 +149,12 @@ bun install          # installs dependencies (hono)
 
 ```bash
 cd xid
-bun run dev          # → Bun.serve on http://localhost:8787
+bun run dev          # Bun.serve on http://localhost:8787
 ```
 
 The server listens on **a single port: `8787`** (or `PORT`). No extra server.
 
-> Why `src/dev.js`? Bun auto-serves `export default { fetch }` (Worker pattern) on `3000`. We split the entrypoint: `src/index.js` is the app (exports `fetch`, for Wrangler) and `src/dev.js` starts an explicit `Bun.serve` on `8787` (no default export → a single port).
+> Why `src/dev.js`? Bun auto-serves `export default { fetch }` (Worker pattern) on `3000`. We split the entrypoint: `src/index.js` is the app (exports `fetch`, for Wrangler) and `src/dev.js` starts an explicit `Bun.serve` on `8787` (no default export, a single port).
 
 ### `userbase.txt` (local allowlist)
 
@@ -172,14 +172,14 @@ bob@example.com:abc123        # static dev :key (hashed on load)
 3. `curl`:
 
 ```bash
-# 1) start → returns Session (and Mailpit receives the OTP)
+# 1) start - returns Session (and Mailpit receives the OTP)
 curl -s -X POST http://localhost:8787/auth/otp/start -H 'Content-Type: application/json' \
   -d '{"email":"alice@example.com"}'
 
 # 2) Check the code in the Mailpit UI (http://localhost:8025) or API:
 curl -s http://localhost:8025/api/v1/messages
 
-# 3) verify → AccessToken/IdToken
+# 3) verify - AccessToken/IdToken
 curl -s -X POST http://localhost:8787/auth/otp/verify -H 'Content-Type: application/json' \
   -d '{"session":"<Session>","email":"alice@example.com","code":"<6digits>"}'
 
@@ -195,8 +195,10 @@ For a user with `email:key` (`bob@example.com:abc123`), `verify` accepts the key
 ### Health check
 
 ```bash
-curl -s http://localhost:8787/health   # → {"ok":true,"env":"dev"}
+curl -s http://localhost:8787/health
 ```
+
+> Returns: `{"ok":true,"env":"dev"}`
 
 ## API (summary)
 
@@ -223,8 +225,8 @@ compatible with generic OIDC clients and MSAL. Verified end-to-end locally
 | Path | Method | Description |
 | --- | --- | --- |
 | `/.well-known/openid-configuration` | `GET` | default tenant discovery |
-| `/{tenant}/v2.0/.well-known/openid-configuration` | `GET` | discovery (`common`/`organizations`/`consumers` → configured `tid`) |
-| `/{tenant}/oauth2/v2.0/authorize` | `GET`+`POST` | email form → OTP code form → `302 redirect_uri?code=&state=` |
+| `/{tenant}/v2.0/.well-known/openid-configuration` | `GET` | discovery (`common`/`organizations`/`consumers`, configured `tid`) |
+| `/{tenant}/oauth2/v2.0/authorize` | `GET`+`POST` | email form send code, and OTP code form returns `302 redirect_uri?code=&state=` |
 | `/{tenant}/oauth2/v2.0/token` | `POST` | `grant_type=authorization_code` (with `code_verifier` if PKCE was used) or `refresh_token` (rotation, single use) |
 | `/{tenant}/discovery/v2.0/keys` | `GET` | JWKS (`RS256`, stable `kid` in prod) |
 | `/{tenant}/openid/userinfo` | `GET` | Bearer claims (`sub`=email, `oid`, `tid`, `preferred_username`) |
@@ -240,26 +242,29 @@ Notes:
   `knownAuthorities: ["<xid-host>"]` + `validateAuthority: false`.
 - In dev `redirect_uri`/`post_logout_redirect_uri` are open; in prod
   `XID_REDIRECT_ALLOWLIST` is required.
+- Login UI is bilingual (English default): `ui_locales=es` OIDC param or
+  `Accept-Language` header selects Spanish.
 
 ## B2B machine-to-machine (`client_credentials`, `client_id`-managed)
 
 Pure service-to-service without users or OTP, on both facades over one shared registry
-(`src/clients.js`): local `clients.txt` → `client_id:client_secret:scope1,scope2`
+(`src/clients.js`): local `clients.txt` with rows `client_id:client_secret:scope1,scope2`
 (see `clients.txt.example`), KV `XID_CLIENTS` in prod (**hashes only**, never plaintext secrets).
 
 ```bash
 echo 'svc-billing:$(openssl rand -base64 32):files.read' >> clients.txt
 curl -s -X POST http://localhost:8787/oauth2/token \
   -u svc-billing:<secret> --data-urlencode 'grant_type=client_credentials'
-# → {"access_token":"eyJ...","expires_in":3600,"token_type":"Bearer","scope":"files.read"}
 ```
+
+> Returns: `{"access_token":"eyJ...","expires_in":3600,"token_type":"Bearer","scope":"files.read"}`
 
 | Path | Grant | Auth | Response |
 | --- | --- | --- | --- |
 | `POST /oauth2/token` (Cognito shape) | `client_credentials` | `Basic` or body | `{access_token, expires_in, token_type, scope}`; errors `{error, error_description}` (+ `WWW-Authenticate` on 401) |
 | `POST /{tenant}/oauth2/v2.0/token` (Entra shape) | `client_credentials` | `Basic` or body | `{access_token, expires_in, token_type, scope}` (no `id_token`/`refresh_token`) |
 
-Notes:
+**Notes**:
 
 - Machine tokens are **RS256**, `sub` = `client_id` (+ `client_id`, `token_use=access`, `scp`/`scope`), ~1 h.
   `GET /v1/files` accepts them only with the `files.read` scope **and** a registered client
@@ -283,9 +288,9 @@ curl -s http://localhost:8787/v1/files?path=docs/secret.md -H "Authorization: Be
 | Variable | Usage |
 | --- | --- |
 | `PORT` | local port (default `8787`) |
-| `XID_JWT_SECRET` | ≥ 32 bytes; if missing in dev an ephemeral one is generated |
+| `XID_JWT_SECRET` | ≥ 32 bytes, if missing in dev an ephemeral one is generated, else: `export XID_JWT_SECRET=$(openssl rand -hex 32)` |
 | `XID_MAIL_FROM` | sender (e.g. `noreply@mx.tudominio.com`) |
-| `XID_SMTP_HOST` / `XID_SMTP_PORT` | dev SMTP (default `127.0.0.1:1025` → Mailpit) |
+| `XID_SMTP_HOST` / `XID_SMTP_PORT` | dev SMTP (default `127.0.0.1:1025` for Mailpit) |
 | `XID_CORS_ORIGINS` | comma-separated CORS allowlist |
 | `XID_CLIENT_ID` | opaque string (default `pub-xid`) |
 | `XID_USERS_TXT` | alternative path to `userbase.txt` |
@@ -300,6 +305,7 @@ curl -s http://localhost:8787/v1/files?path=docs/secret.md -H "Authorization: Be
 
 ```bash
 cd xid
+export XID_JWT_SECRET=$(openssl rand -hex 32)
 npx wrangler kv namespace create XID_META      # paste IDs into wrangler.toml
 npx wrangler kv namespace create XID_USERS
 npx wrangler kv namespace create XID_FILES
@@ -309,28 +315,73 @@ bun scripts/gen-rsa-jwk.js --kid xid-1 > jwk.json  # do NOT version
 npx wrangler secret put XID_RSA_PRIVATE_JWK < jwk.json && rm jwk.json
 npx wrangler secret put XID_MAIL_FROM
 npx wrangler secret put XID_CORS_ORIGINS
-bun scripts/bootstrap-kv.js --apply            # userbase.txt → KV XID_USERS (without --include-dev-keys in prod)
-bun scripts/bootstrap-clients.js --apply       # clients.txt → KV XID_CLIENTS (hashes only, never secrets)
+bun scripts/bootstrap-kv.js --apply            # userbase.txt: KV XID_USERS (without --include-dev-keys in prod)
+bun scripts/bootstrap-clients.js --apply       # clients.txt: KV XID_CLIENTS (hashes only, never secrets)
+npx wrangler kv key put --binding=XID_FILES "cui/onmind-cui-v3.js" --path vendor/cui/onmind-cui-v3.js  # login bundle (public)
 npx wrangler deploy
 ```
 
 Sending requirement: domain onboarded in **Cloudflare Email Service** (SPF/DKIM/DMARC) and a **Paid** Workers plan for arbitrary recipients.
 
-## PUB integration
+## Docker (containers / VMs, no Cloudflare)
 
-In `sites/<site>/.env`:
+Without KV the file adapters apply (`userbase.txt`/`clients.txt`, `XID_FILES_ROOT`)
+and OTP/rate-limit/code state lives in memory.
+
+```bash
+cd xid
+docker build -t onmind-xid .
+
+mkdir -p /srv/xid/files/docs
+printf 'alice@example.com\n' > /srv/xid/userbase.txt
+printf 'svc-billing:$(openssl rand -base64 32):files.read\n' > /srv/xid/clients.txt
+
+docker run -d --name xid -p 8787:8787 \
+  -v /srv/xid:/data \
+  -e XID_JWT_SECRET=$(openssl rand -hex 32) \
+  -e XID_SMTP_HOST=mailpit -e XID_SMTP_PORT=1025 \
+  -e XID_MAIL_FROM=noreply@example.com \
+  -e XID_CORS_ORIGINS=https://tu-sitio.com \
+  -e XID_REDIRECT_ALLOWLIST=https://tu-sitio.com/callback \
+  onmind-xid
+curl -s http://localhost:8787/health
+```
+
+Compose equivalent:
+
+```yaml
+services:
+  xid:
+    build: .
+    ports: ["8787:8787"]
+    volumes: ["/srv/xid:/data"]
+    environment:
+      XID_JWT_SECRET: ${XID_JWT_SECRET:?required}
+      XID_SMTP_HOST: mailpit
+      XID_MAIL_FROM: noreply@example.com
+      XID_CORS_ORIGINS: https://tu-sitio.com
+```
+
+Notes: the image defaults to `XID_ENV=production` with FS paths under `/data`
+(override via env); with `production` OTP email requires a reachable SMTP —
+static `email:key` users skip mail (dev only). Secrets via env/vault, never baked in.
+
+## OnMind-PUB integration
+
+For [**OnMind-PUB**](https://github.com/kaesar/onmind-pub), in `sites/<site>/.env` includes the following:
 
 ```
 PUB_XID=1
-XID_URL=http://localhost:8787      # or the deployed Worker
+XID_URL=http://localhost:8787
 XID_CLIENT_ID=pub-xid
 XID_FILES=0
 ```
 
-`AsAccess.vue` unlocks `hide: 2` with a session; without a session it redirects to `/access?next=`. `XID_FILES=1` also fetches the body to the Worker.
+> `AsAccess.vue` unlocks `hide: 2` with a session. Without a session it redirects to `/access?next=`.  
+> `XID_FILES=1` also fetches the body to the Worker. `XID_URL` could be the deployed worker address.
 
 ---
 
 ## Status
 
-Implemented and verified locally (Bun + Mailpit): end-to-end OTP flow, JWT tokens, `/auth/me`, files (200/401/404/traversal 400), CORS, PUB build with `PUB_XID=1`. Reproducible smoke suite: `bun run smoke` (23 checks in-process, no ports). Deploy configuration still **pending** (Cloudflare Email, KV IDs, secrets).
+Implemented and verified locally (Bun + Mailpit): end-to-end OTP flow, JWT tokens, `/auth/me`, files (200/401/404/traversal 400), CORS, PUB build with `PUB_XID=1`. Reproducible smoke suite: `bun run smoke` (25 checks in-process, no ports). Deploy configuration still **pending** (Cloudflare Email, KV IDs, secrets).

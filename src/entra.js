@@ -26,6 +26,7 @@ import { verifyOtpSession, issueOtpSession, verifyAccessToken, denyJti } from '.
 import { sendMail, makeOtpMessage } from './mail.js'
 import { normalizeEmail, isValidEmail, maskEmail, sha256Hex, sleep } from './util.js'
 import { signRs256, verifyRs256, getPublicJwk } from './entra-keys.js'
+import { cuiUrl } from './assets.js'
 import {
   getClient,
   verifyClientSecret,
@@ -195,10 +196,138 @@ function discoveryDoc(origin, tenant) {
   }
 }
 
-// ---------------- HTML UI (authorize) ----------------
+// ---------------- HTML UI (English, Español) ---------------------
+// `ui_locales` OIDC param → `Accept-Language` header → default `en`
 
-function pageShell(title, inner) {
-  return `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title><style>body{font-family:system-ui,sans-serif;max-width:26rem;margin:4rem auto;padding:0 1rem;color:#111}input,button{font-size:1rem;padding:.55rem .7rem;width:100%;box-sizing:border-box}button{cursor:pointer;margin-top:.6rem}label{display:block;margin:.8rem 0 .3rem}.muted{color:#555;font-size:.85rem}.err{background:#fde7e7;border:1px solid #f3b4b4;padding:.6rem .8rem;border-radius:.4rem}</style></head><body>${inner}</body></html>`
+const STRINGS = {
+  en: {
+    sign_in: 'Sign in',
+    verify_code: 'Verify code',
+    email: 'Email',
+    email_ph: 'you@email.com',
+    send_code: 'Send code',
+    code_label: '6-digit code',
+    code_ph: '123456',
+    verify_btn: 'Verify and sign in',
+    code_sent_to: 'Code sent to',
+    otp_hint: 'You will receive a 6-digit code valid for 5 min.',
+    logged_out: 'Signed out',
+    session_revoked: 'Token revoked (if Bearer was sent).',
+    error_title: 'Error',
+    err_invalid_email: 'Invalid email.',
+    err_not_allowlisted: 'Email not authorized (allowlist).',
+    err_not_authorized: 'Email not authorized.',
+    err_session_expired: 'Session expired. Request a new code.',
+    err_code_invalid: 'Invalid code. Try again.',
+    err_attempts: 'Attempt limit reached. Request a new code.',
+    err_missing_client: 'Missing client_id',
+    err_redirect: 'redirect_uri not allowed',
+    redirect_hint: 'Set XID_REDIRECT_ALLOWLIST.',
+    err_post_logout: 'post_logout_redirect_uri not allowed',
+  },
+  es: {
+    sign_in: 'Iniciar sesión',
+    verify_code: 'Verificar código',
+    email: 'Email',
+    email_ph: 'tu@email.com',
+    send_code: 'Enviar código',
+    code_label: 'Código de 6 dígitos',
+    code_ph: '123456',
+    verify_btn: 'Verificar e iniciar sesión',
+    code_sent_to: 'Código enviado a',
+    otp_hint: 'Recibirás un código de 6 dígitos válido 5 min.',
+    logged_out: 'Sesión cerrada',
+    session_revoked: 'Token revocado (si se envió Bearer).',
+    error_title: 'Error',
+    err_invalid_email: 'Email inválido.',
+    err_not_allowlisted: 'Email no autorizado (allowlist).',
+    err_not_authorized: 'Email no autorizado.',
+    err_session_expired: 'Sesión expirada. Pide un código nuevo.',
+    err_code_invalid: 'Código inválido. Inténtalo de nuevo.',
+    err_attempts: 'Límite de intentos. Pide un código nuevo.',
+    err_missing_client: 'Falta client_id',
+    err_redirect: 'redirect_uri no permitido',
+    redirect_hint: 'Configura XID_REDIRECT_ALLOWLIST.',
+    err_post_logout: 'post_logout_redirect_uri no permitido',
+  },
+}
+
+function pickLang(request, params) {
+  const fromParam = String(params?.ui_locales || '')
+    .split(/[\s_+,;]+/)
+    .map((s) => s.toLowerCase().split('-')[0])
+    .find((s) => s === 'en' || s === 'es')
+  if (fromParam) return fromParam
+  const header = request?.headers?.get('accept-language') || ''
+  for (const part of header.split(',')) {
+    const tag = part.split(';')[0].trim().toLowerCase().split('-')[0]
+    if (tag === 'en' || tag === 'es') return tag
+  }
+  return 'en'
+}
+
+const t = (lang, key) => (STRINGS[lang] || STRINGS.en)[key] || key
+
+function cuiScript() {
+  return `<script type="module" src="${esc(cuiUrl())}"></script>`
+}
+
+// Puente mínimo CUI ↔ formulario nativo:
+// - `as-input` no es form-associated: al enviar se copian sus valores a hidden.
+// - `as-button` emite `button-tap`: dispara el submit del formulario.
+// - Fallback: si el bundle CUI no carga, se sustituyen por input/button nativos.
+const CUI_BRIDGE = `<script>
+(function(){
+  function ensureHidden(form, name, value) {
+    var h = form.querySelector('input[type="hidden"][name="' + name + '"]');
+    if (!h) { h = document.createElement('input'); h.type = 'hidden'; h.name = name; form.appendChild(h); }
+    if (value !== undefined) h.value = value;
+    return h;
+  }
+  function sync(form) {
+    form.querySelectorAll('as-input[name]').forEach(function (el) {
+      ensureHidden(form, el.getAttribute('name'), el.getAttribute('value') || '');
+    });
+  }
+  function fallback() {
+    document.querySelectorAll('as-input').forEach(function (el) {
+      var i = document.createElement('input');
+      i.name = el.getAttribute('name') || ''; i.type = el.getAttribute('kind') || 'text';
+      i.placeholder = el.getAttribute('placeholder') || ''; i.value = el.getAttribute('value') || '';
+      i.required = true; i.setAttribute('aria-label', el.getAttribute('label') || i.name);
+      el.replaceWith(i);
+    });
+    document.querySelectorAll('as-button').forEach(function (el) {
+      var b = document.createElement('button'); b.type = 'submit'; b.textContent = el.getAttribute('label') || 'Enviar';
+      el.replaceWith(b);
+    });
+  }
+  function ready() {
+    var ok = window.customElements && customElements.get('as-input') && customElements.get('as-button') && customElements.get('as-box');
+    if (!ok) { fallback(); return; }
+    document.querySelectorAll('form[data-cui]').forEach(function (f) {
+      var b = f.querySelector('as-button');
+      if (b) b.addEventListener('button-tap', function () { f.requestSubmit(); });
+      f.addEventListener('submit', function (ev) {
+        sync(f);
+        var empty = false;
+        f.querySelectorAll('as-input[name]').forEach(function (el) {
+          if (!((el.getAttribute('value') || '').trim())) empty = true;
+        });
+        if (empty) ev.preventDefault();
+      });
+    });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { setTimeout(ready, 400); });
+  else setTimeout(ready, 400);
+})();
+</script>`
+
+function pageShell(title, inner, env, lang = 'en') {
+  return `<!doctype html><html lang="${lang === 'es' ? 'es' : 'en'}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title>` +
+    cuiScript() +
+    `<style>html,body{margin:0;padding:0}body{font-family:system-ui,sans-serif;background:#0f172a;color:#e5e7eb;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1rem;box-sizing:border-box}.wrap{width:100%;max-width:24rem}as-box h1{font-size:1.25rem;margin:0 0 .25rem;color:#111827}as-box .muted{color:#6b7280;font-size:.85rem}as-box .err{background:#fde7e7;border:1px solid #f3b4b4;color:#7f1d1d;padding:.6rem .8rem;border-radius:.4rem}as-box as-button{display:block;margin-top:.9rem}as-box input[type=text],as-box input[type=email]{font-size:1rem;padding:.55rem .7rem;width:100%;box-sizing:border-box;margin-top:.5rem}as-box button[type=submit]{font-size:1rem;padding:.55rem 1rem;width:100%;box-sizing:border-box;cursor:pointer;margin-top:.9rem}</style></head><body><div class="wrap"><as-box>${inner}</as-box></div>${CUI_BRIDGE}</body></html>`
+
 }
 
 function hiddenFields(params) {
@@ -208,30 +337,36 @@ function hiddenFields(params) {
     .join('')
 }
 
-function emailForm(oauth, { error = '', email = '' } = {}) {
+function emailForm(oauth, { errorKey = '', email = '', env = {}, lang = 'en' } = {}) {
   return pageShell(
-    'Iniciar sesión',
-    `<h1>Iniciar sesión</h1>` +
-      (error ? `<p class="err">${esc(error)}</p>` : '') +
-      `<form method="post">` +
+    t(lang, 'sign_in'),
+    `<h1>${esc(t(lang, 'sign_in'))}</h1>` +
+      (errorKey ? `<p class="err">${esc(t(lang, errorKey))}</p>` : '') +
+      `<form method="post" data-cui>` +
       hiddenFields(oauth) +
-      `<label for="email">Email</label><input id="email" name="email" type="email" required autocomplete="email" value="${esc(email)}">` +
-      `<button type="submit">Enviar código</button></form>` +
-      `<p class="muted">Recibirás un código de 6 dígitos válido 5 min (solo allowlist).</p>`
+      `<as-input name="email" kind="email" label="${esc(t(lang, 'email'))}" placeholder="${esc(t(lang, 'email_ph'))}" value="${esc(email)}"></as-input>` +
+      `<as-button label="${esc(t(lang, 'send_code'))}" variant="primary"></as-button></form>` +
+      `<p class="muted">${esc(t(lang, 'otp_hint'))}</p>`,
+    env,
+    lang
   )
 }
 
-function codeForm(oauth, { error = '', email = '', otpSession = '', sentTo = '' } = {}) {
+// Sin input de email redundante: el email viaja en hidden (prefijado por el
+// servidor) y se muestra como texto ("Código enviado a …" / "Code sent to …").
+function codeForm(oauth, { errorKey = '', email = '', otpSession = '', sentTo = '', env = {}, lang = 'en' } = {}) {
   return pageShell(
-    'Verificar código',
-    `<h1>Verificar código</h1>` +
-      (error ? `<p class="err">${esc(error)}</p>` : '') +
-      (sentTo ? `<p class="muted">Código enviado a ${esc(sentTo)}.</p>` : '') +
-      `<form method="post">` +
+    t(lang, 'verify_code'),
+    `<h1>${esc(t(lang, 'verify_code'))}</h1>` +
+      (errorKey ? `<p class="err">${esc(t(lang, errorKey))}</p>` : '') +
+      `<p class="muted">${esc(t(lang, 'code_sent_to'))} ${esc(sentTo || maskEmail(email))}.</p>` +
+      `<form method="post" data-cui>` +
       hiddenFields({ ...oauth, otp_session: otpSession }) +
-      `<label for="email">Email</label><input id="email" name="email" type="email" required value="${esc(email)}" readonly>` +
-      `<label for="code">Código de 6 dígitos</label><input id="code" name="code" inputmode="numeric" pattern="[0-9]{6}" required autocomplete="one-time-code">` +
-      `<button type="submit">Verificar e iniciar sesión</button></form>`
+      `<input type="hidden" name="email" value="${esc(email)}">` +
+      `<as-input name="code" kind="text" label="${esc(t(lang, 'code_label'))}" placeholder="${esc(t(lang, 'code_ph'))}" value=""></as-input>` +
+      `<as-button label="${esc(t(lang, 'verify_btn'))}" variant="primary"></as-button></form>`,
+    env,
+    lang
   )
 }
 
@@ -245,6 +380,7 @@ function oauthPassthrough(query) {
     code_challenge: query.code_challenge || '',
     code_challenge_method: query.code_challenge_method || '',
     response_type: query.response_type || '',
+    ui_locales: query.ui_locales || '',
   }
 }
 
@@ -265,15 +401,18 @@ export async function handleAuthorizeGet(c, tenantRaw) {
   const tenant = cleanTenant(tenantRaw, env)
   const q = c.req.query()
   const oauth = oauthPassthrough(q)
+  const lang = pickLang(c.req.raw, oauth)
 
-  if (!oauth.client_id) return c.html(pageShell('Error', '<h1>Falta client_id</h1>'), 400)
+  if (!oauth.client_id) {
+    return c.html(pageShell(t(lang, 'error_title'), `<h1>${esc(t(lang, 'err_missing_client'))}</h1>`, env, lang), 400)
+  }
   if (!oauth.redirect_uri || !isRedirectAllowed(env, oauth.redirect_uri)) {
-    return c.html(pageShell('Error', '<h1>redirect_uri no permitido</h1><p class="muted">Configura XID_REDIRECT_ALLOWLIST.</p>'), 400)
+    return c.html(pageShell(t(lang, 'error_title'), `<h1>${esc(t(lang, 'err_redirect'))}</h1><p class="muted">${esc(t(lang, 'redirect_hint'))}</p>`, env, lang), 400)
   }
   if (oauth.response_type && oauth.response_type !== 'code' && !oauth.response_type.includes('code')) {
     return c.redirect(redirectWithParams(oauth.redirect_uri, { error: 'unsupported_response_type', error_description: 'only code supported', state: oauth.state }), 302)
   }
-  return c.html(emailForm(oauth))
+  return c.html(emailForm(oauth, { env, lang }))
 }
 
 export async function handleAuthorizePost(c, tenantRaw) {
@@ -281,45 +420,48 @@ export async function handleAuthorizePost(c, tenantRaw) {
   const tenant = cleanTenant(tenantRaw, env)
   const body = await readBodyParams(c)
   const oauth = oauthPassthrough(body)
+  const lang = pickLang(c.req.raw, oauth)
   const email = normalizeEmail(body.email)
   const code = typeof body.code === 'string' ? body.code.trim() : ''
   const otpSession = typeof body.otp_session === 'string' ? body.otp_session : ''
 
-  if (!oauth.client_id) return c.html(pageShell('Error', '<h1>Falta client_id</h1>'), 400)
+  if (!oauth.client_id) {
+    return c.html(pageShell(t(lang, 'error_title'), `<h1>${esc(t(lang, 'err_missing_client'))}</h1>`, env, lang), 400)
+  }
   if (!oauth.redirect_uri || !isRedirectAllowed(env, oauth.redirect_uri)) {
-    return c.html(pageShell('Error', '<h1>redirect_uri no permitido</h1>'), 400)
+    return c.html(pageShell(t(lang, 'error_title'), `<h1>${esc(t(lang, 'err_redirect'))}</h1>`, env, lang), 400)
   }
   const goError = (error, description) =>
     c.redirect(redirectWithParams(oauth.redirect_uri, { error, error_description: description, state: oauth.state }), 302)
 
-  if (!isValidEmail(email)) return c.html(emailForm(oauth, { error: 'Email inválido.', email }), 400)
+  if (!isValidEmail(email)) return c.html(emailForm(oauth, { errorKey: 'err_invalid_email', email, env, lang }), 400)
 
   // Paso 1: pide email → genera OTP y muestra form de código.
   if (!code) {
     const user = await getUser(env, email)
     await sleep(180 + Math.floor(Math.random() * 220))
-    if (!user) return c.html(emailForm(oauth, { error: 'Email no autorizado (allowlist).', email }), 403)
+    if (!user) return c.html(emailForm(oauth, { errorKey: 'err_not_allowlisted', email, env, lang }), 403)
     if (!user.otpKeyHash) {
       const { code: otp } = await startOtp(env, email)
-      const msg = makeOtpMessage(otp, email)
+      const msg = makeOtpMessage(otp, email, lang)
       await sendMail(env, { to: email, subject: msg.subject, text: msg.text, code: msg.code })
     }
     const session = await issueOtpSession(env, email)
-    return c.html(codeForm(oauth, { email, otpSession: session, sentTo: maskEmail(email) }))
+    return c.html(codeForm(oauth, { email, otpSession: session, sentTo: maskEmail(email), env, lang }))
   }
 
   // Paso 2: verifica código → emite authorization code y redirige.
   const user = await getUser(env, email)
-  if (!user) return c.html(emailForm(oauth, { error: 'Email no autorizado.', email }), 403)
+  if (!user) return c.html(emailForm(oauth, { errorKey: 'err_not_authorized', email, env, lang }), 403)
   const sessionPayload = await verifyOtpSession(env, otpSession)
   if (!sessionPayload || sessionPayload.sub !== email) {
-    return c.html(codeForm(oauth, { error: 'Sesión expirada. Pide un código nuevo.', email, otpSession: '' }), 400)
+    return c.html(codeForm(oauth, { errorKey: 'err_session_expired', email, otpSession: '', env, lang }), 400)
   }
   const ok = await verifyOtp(env, email, code, user)
   if (!ok) {
     const left = await otpAttemptsLeft(env, email)
-    const msg = left <= 0 ? 'Límite de intentos. Pide un código nuevo.' : 'Código inválido. Inténtalo de nuevo.'
-    return c.html(codeForm(oauth, { error: msg, email, otpSession }), 400)
+    const errorKey = left <= 0 ? 'err_attempts' : 'err_code_invalid'
+    return c.html(codeForm(oauth, { errorKey, email, otpSession, env, lang }), 400)
   }
   const authCode = randomB64Url(32)
   await kvPut(
@@ -498,16 +640,17 @@ export async function handleLogout(c, tenantRaw) {
     if (payload?.jti && payload?.exp) await denyJti(env, payload.jti, payload.exp)
   }
   const q = c.req.query()
+  const lang = pickLang(c.req.raw, q)
   const postUri = q.post_logout_redirect_uri || ''
   if (postUri) {
     if (!isRedirectAllowed(env, postUri)) {
-      return c.html(pageShell('Error', '<h1>post_logout_redirect_uri no permitido</h1>'), 400)
+      return c.html(pageShell(t(lang, 'error_title'), `<h1>${esc(t(lang, 'err_post_logout'))}</h1>`, env, lang), 400)
     }
     const url = redirectWithParams(postUri, { state: q.state || '' })
     return c.redirect(url, 302)
   }
   void tenant
-  return c.html(pageShell('Sesión cerrada', '<h1>Sesión cerrada</h1><p class="muted">Token revocado (si se envió Bearer).</p>'))
+  return c.html(pageShell(t(lang, 'logged_out'), `<h1>${esc(t(lang, 'logged_out'))}</h1><p class="muted">${esc(t(lang, 'session_revoked'))}</p>`, env, lang))
 }
 
 // ---------------- registro ----------------

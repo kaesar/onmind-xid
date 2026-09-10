@@ -33,7 +33,14 @@ export async function sendMail(env, { to, from, subject, text, code }) {
   return { via: 'console' }
 }
 
-export function makeOtpMessage(code, email) {
+export function makeOtpMessage(code, email, lang = 'en') {
+  if (lang === 'es') {
+    return {
+      subject: 'Tu código de acceso',
+      text: `Tu código de acceso OnMind es ${code}\n\nVence en 5 minutos. Si no lo solicitaste, ignora este mensaje.\n`,
+      code,
+    }
+  }
   return {
     subject: 'Your login code',
     text: `Your OnMind login code is ${code}\n\nIt expires in 5 minutes. If you did not request it, ignore this message.\n`,

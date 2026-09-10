@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { initiateAuth, respondToAuthChallenge, getUserOp, globalSignOut, signUpStub, oauthToken } from './cognito.js'
 import { getFileContent } from './files.js'
+import { getAsset } from './assets.js'
 import { registerEntra } from './entra.js'
 
 const app = new Hono()
@@ -177,6 +178,16 @@ app.get('/v1/files', (c) => {
 })
 
 app.get('/files/*', (c) => sendFile(c, c.req.path.replace(/^\/files\//, '')))
+
+// ---------------- Assets públicos del login (bundle CUI, sin auth) ----------------
+app.get('/cui/*', async (c) => {
+  const res = await getAsset(c.env, c.req.path.replace(/^\//, ''))
+  if (res.status !== 200) return c.text(res.body, res.status)
+  return new Response(res.body, {
+    status: 200,
+    headers: { 'Content-Type': res.contentType, 'Cache-Control': 'public, max-age=3600' },
+  })
+})
 
 // ---------------- Fachada Entra ID (simulación OIDC sobre el mismo core) ----------------
 registerEntra(app)
