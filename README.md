@@ -13,7 +13,7 @@ This is an **IdP/IAM** for [**OnMind-PUB**](https://github.com/kaesar/onmind-pub
 
 ### What this package does
 
-1. **Authenticates only allowlisted emails** with **email OTP** (no passwords).
+1. **Authenticates only allowlisted emails** with **email OTP** (passwordless by default; optional real bcrypt password per user with OTP kept as fallback).
 2. Exposes a **subset of the Cognito Identity Provider JSON API** (not AWS Cognito).
 3. Serves a minimal **file manager**: `GET` of `hide: 2` article assets with a valid session.
 4. Replaces Userbase in PUB (`PUB_XID`, `AsAccess.vue`, README, `task/initialize.js`).
@@ -24,8 +24,8 @@ This is an **IdP/IAM** for [**OnMind-PUB**](https://github.com/kaesar/onmind-pub
 
 | # | Decision | Rationale |
 |---|----------|-----------|
-| 1 | **Allowlist, no open signup** | Minimal surface, no OTP spam to third parties. Onboarding = editing `userbase.txt` or writing KV. |
-| 2 | **No passwords** | Single-use OTP only (TTL ~5 min) or **dev**-only static `email:key` hashed on load. |
+| 1 | **Allowlist, no open signup** | Minimal surface, no OTP spam to third parties. Onboarding = editing `xusers.txt` or writing KV. |
+| 2 | **Passwordless first, optional real password** | Single-use OTP (TTL ~5 min) by default; optional bcrypt `email:$2b$` password (TinyAuth-compatible) with OTP fallback; legacy **dev**-only static `email:key` (SHA-256 on load). |
 | 3 | **Cognito subset, not AWS** | `POST /` with `X-Amz-Target` + `/auth/otp/*` aliases. Ops: `InitiateAuth`, `RespondToAuthChallenge`, `GetUser`, `GlobalSignOut`. `SignUp` for 403. |
 | 4 | **HMAC JWT (`XID_JWT_SECRET`), no RefreshToken** | Access + Id (~1 h). Claims `sub` = email, `token_use` = `access` \| `id`. Less state; OTP re-login is cheap. |
 | 5 | **Dual session channel** | Pages and the Worker don't share cookies. Vue stores the session in `sessionStorage.xidCurrentSession`. The file API uses `Authorization: Bearer` + an HttpOnly `xid_session` cookie on the Worker. |
@@ -53,7 +53,7 @@ flowchart LR
     Sess[session.js]
   end
   subgraph store [State]
-    Txt[local userbase.txt]
+    Txt[local xusers.txt]
     KVU[KV XID_USERS]
     KVO["KV otp: / sess:"]
     KVF[KV XID_FILES]
@@ -105,7 +105,7 @@ sequenceDiagram
 
 | | Local (`bun run dev`) | Worker |
 |---|---|---|
-| Users | `userbase.txt` (FS) | KV `XID_USERS` |
+| Users | `xusers.txt` (FS) | KV `XID_USERS` |
 | OTP / rate limit | In-memory `Map` **or** the same KV under `wrangler dev` | KV prefix `otp:`, `rl:` |
 | Files | `XID_FILES_ROOT` (default `xid/files`) | KV `XID_FILES` (key = path) |
 | Mail | Mailpit SMTP `XID_SMTP_HOST:XID_SMTP_PORT` (default `127.0.0.1:1025`, UI `:8025`); stdout fallback if `XID_ENV=dev` | `send_email` binding with Cloudflare Email Service (`env.MAIL.send()`); `wrangler dev` simulates it |
@@ -156,14 +156,21 @@ The server listens on **a single port: `8787`** (or `PORT`). No extra server.
 
 > Why `src/dev.js`? Bun auto-serves `export default { fetch }` (Worker pattern) on `3000`. We split the entrypoint: `src/index.js` is the app (exports `fetch`, for Wrangler) and `src/dev.js` starts an explicit `Bun.serve` on `8787` (no default export, a single port).
 
-### `userbase.txt` (local allowlist)
+### `xusers.txt` (local allowlist)
 
-Create `userbase.txt` (see `userbase.txt.example`):
+Create `xusers.txt` (see `xusers.txt.example`):
 
 ```
-alice@example.com
-bob@example.com:abc123        # static dev :key (hashed on load)
+alice@example.com                                   # OTP by email only
+bob@example.com:$2b$10$...                          # real password (bcrypt, TinyAuth-compatible)
+carol@example.com:staticdev                         # legacy static dev key (SHA-256 on load)
 ```
+
+- `email` alone → passwordless email OTP (production path).
+- `email:$2b$…` → real password login (Cognito `PASSWORD` challenge, authorize
+  `mode=password`) with email OTP kept as fallback. Generate with
+  `bun run cli user password <email>` (never stored in clear).
+- `email:key` → legacy static dev key accepted as the OTP code (dev only).
 
 ## Testing the OTP flow
 
@@ -238,6 +245,10 @@ Notes:
   stay HS256. `userinfo` accepts both; `GET /v1/files` accepts both (`sub`=email).
 - Interactive flow = public clients (no secret; ignored if sent). B2B = `client_credentials`
   with secret (see below). PKCE `S256` is optional but verified if sent.
+- Users with a bcrypt password can sign in with it (`mode=password`, masked CUI
+  input) or fall back to email OTP (`mode=otp` toggle link); users without one
+  are OTP-only. Cognito accepts `ChallengeResponses.PASSWORD` (password guessing
+  is rate-limited, 10/15 min).
 - MSAL.js: custom authority `https://<xid-host>/<tenant>` with
   `knownAuthorities: ["<xid-host>"]` + `validateAuthority: false`.
 - In dev `redirect_uri`/`post_logout_redirect_uri` are open; in prod
@@ -248,11 +259,11 @@ Notes:
 ## B2B machine-to-machine (`client_credentials`, `client_id`-managed)
 
 Pure service-to-service without users or OTP, on both facades over one shared registry
-(`src/clients.js`): local `clients.txt` with rows `client_id:client_secret:scope1,scope2`
-(see `clients.txt.example`), KV `XID_CLIENTS` in prod (**hashes only**, never plaintext secrets).
+(`src/clients.js`): local `xclients.txt` with rows `client_id:client_secret:scope1,scope2`
+(see `xclients.txt.example`), KV `XID_CLIENTS` in prod (**hashes only**, never plaintext secrets).
 
 ```bash
-echo 'svc-billing:$(openssl rand -base64 32):files.read' >> clients.txt
+echo 'svc-billing:$(openssl rand -base64 32):files.read' >> xclients.txt
 curl -s -X POST http://localhost:8787/oauth2/token \
   -u svc-billing:<secret> --data-urlencode 'grant_type=client_credentials'
 ```
@@ -283,6 +294,29 @@ echo '# Secret' > files/docs/secret.md
 curl -s http://localhost:8787/v1/files?path=docs/secret.md -H "Authorization: Bearer <AccessToken>"
 ```
 
+## CLI (`bun run cli`)
+
+Manages `xusers.txt` and `xclients.txt` with args or, if missing, interactively
+(@clack/prompts). Secrets are shown only once, at creation/rotation.
+
+```bash
+bun run cli                                           # interactive menu (no args)
+bun run cli user add alice@example.com --key abc123   # --key '' = OTP only
+bun run cli user key bob@example.com --key nuevo      # set/change dev key
+bun run cli user password bob@example.com             # set/change bcrypt password (prompted, hashed)
+bun run cli user rm alice@example.com                 # asks unless --yes
+bun run cli user list
+bun run cli client add svc-billing --scopes files.read --gen
+bun run cli client scopes svc-billing --scopes files.read,other
+bun run cli client rotate svc-billing                 # prints new secret once
+bun run cli client rm svc-billing --yes
+bun run cli client list
+```
+
+Flags: `--users <path>` / `--clients <path>` (default `XID_USERS_TXT` /
+`XID_CLIENTS_TXT` or repo files). Non-TTY mode never prompts: it fails fast
+except `--gen`/OTP-only defaults. For prod KV, run the bootstrap scripts after.
+
 ## Environment variables
 
 | Variable | Usage |
@@ -293,8 +327,8 @@ curl -s http://localhost:8787/v1/files?path=docs/secret.md -H "Authorization: Be
 | `XID_SMTP_HOST` / `XID_SMTP_PORT` | dev SMTP (default `127.0.0.1:1025` for Mailpit) |
 | `XID_CORS_ORIGINS` | comma-separated CORS allowlist |
 | `XID_CLIENT_ID` | opaque string (default `pub-xid`) |
-| `XID_USERS_TXT` | alternative path to `userbase.txt` |
-| `XID_CLIENTS_TXT` | alternative path to `clients.txt` |
+| `XID_USERS_TXT` | alternative path to `xusers.txt` |
+| `XID_CLIENTS_TXT` | alternative path to `xclients.txt` |
 | `XID_FILES_ROOT` | local files root (default `./files`) |
 | `XID_ENV` | `dev` (console fallback) \| `production` |
 | `XID_RSA_PRIVATE_JWK` | RSA private JWK (`bun scripts/gen-rsa-jwk.js`); ephemeral in dev if missing |
@@ -315,8 +349,8 @@ bun scripts/gen-rsa-jwk.js --kid xid-1 > jwk.json  # do NOT version
 npx wrangler secret put XID_RSA_PRIVATE_JWK < jwk.json && rm jwk.json
 npx wrangler secret put XID_MAIL_FROM
 npx wrangler secret put XID_CORS_ORIGINS
-bun scripts/bootstrap-kv.js --apply            # userbase.txt: KV XID_USERS (without --include-dev-keys in prod)
-bun scripts/bootstrap-clients.js --apply       # clients.txt: KV XID_CLIENTS (hashes only, never secrets)
+bun scripts/bootstrap-kv.js --apply            # xusers.txt: KV XID_USERS (without --include-dev-keys in prod)
+bun scripts/bootstrap-clients.js --apply       # xclients.txt: KV XID_CLIENTS (hashes only, never secrets)
 npx wrangler kv key put --binding=XID_FILES "cui/onmind-cui-v3.js" --path vendor/cui/onmind-cui-v3.js  # login bundle (public)
 npx wrangler deploy
 ```
@@ -325,7 +359,7 @@ Sending requirement: domain onboarded in **Cloudflare Email Service** (SPF/DKIM/
 
 ## Docker (containers / VMs, no Cloudflare)
 
-Without KV the file adapters apply (`userbase.txt`/`clients.txt`, `XID_FILES_ROOT`)
+Without KV the file adapters apply (`xusers.txt`/`xclients.txt`, `XID_FILES_ROOT`)
 and OTP/rate-limit/code state lives in memory.
 
 ```bash
@@ -333,8 +367,8 @@ cd xid
 docker build -t onmind-xid .
 
 mkdir -p /srv/xid/files/docs
-printf 'alice@example.com\n' > /srv/xid/userbase.txt
-printf 'svc-billing:$(openssl rand -base64 32):files.read\n' > /srv/xid/clients.txt
+printf 'alice@example.com\n' > /srv/xid/xusers.txt
+printf 'svc-billing:$(openssl rand -base64 32):files.read\n' > /srv/xid/xclients.txt
 
 docker run -d --name xid -p 8787:8787 \
   -v /srv/xid:/data \
@@ -384,4 +418,4 @@ XID_FILES=0
 
 ## Status
 
-Implemented and verified locally (Bun + Mailpit): end-to-end OTP flow, JWT tokens, `/auth/me`, files (200/401/404/traversal 400), CORS, PUB build with `PUB_XID=1`. Reproducible smoke suite: `bun run smoke` (25 checks in-process, no ports). Deploy configuration still **pending** (Cloudflare Email, KV IDs, secrets).
+Implemented and verified locally (Bun + Mailpit): end-to-end OTP flow, JWT tokens, `/auth/me`, files (200/401/404/traversal 400), CORS, PUB build with `PUB_XID=1`. Reproducible smoke suite: `bun run smoke` (31 checks in-process, no ports). Deploy configuration still **pending** (Cloudflare Email, KV IDs, secrets).

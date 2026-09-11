@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// Bootstrap: userbase.txt → KV XID_USERS (one-shot).
+// Bootstrap: xusers.txt → KV XID_USERS (one-shot).
 // Uso:
 //   bun scripts/bootstrap-kv.js --apply [--include-dev-keys]
 // Sin --apply imprime las entradas que se escribirían. `--include-dev-keys` sube
@@ -11,13 +11,13 @@ import { fileURLToPath } from 'node:url'
 import { parseTxt } from '../src/users.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const txtPath = path.resolve(process.env.XID_USERS_TXT || path.join(__dirname, '..', 'userbase.txt'))
+const txtPath = path.resolve(process.env.XID_USERS_TXT || path.join(__dirname, '..', 'xusers.txt'))
 
 const includeDevKeys = process.argv.includes('--include-dev-keys')
 const apply = process.argv.includes('--apply')
 
 if (!fs.existsSync(txtPath)) {
-  console.error(`userbase.txt not found: ${txtPath}`)
+  console.error(`xusers.txt not found: ${txtPath}`)
   process.exit(1)
 }
 
@@ -25,6 +25,7 @@ const users = await parseTxt(fs.readFileSync(txtPath, 'utf-8'))
 const entries = []
 for (const user of users.values()) {
   const value = { email: user.email }
+  if (user.passwordHash) value.passwordHash = user.passwordHash // bcrypt: verificador legítimo, siempre se sube
   if (includeDevKeys && user.otpKeyHash) value.otpKeyHash = user.otpKeyHash
   entries.push({ key: user.email, value: JSON.stringify(value), email: user.email })
 }

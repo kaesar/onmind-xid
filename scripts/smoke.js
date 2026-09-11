@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // Humo e2e en proceso (sin puertos ni red): ejerce app.fetch directamente.
-// Usa los fixtures dev userbase.txt (bob@example.com:abc123) y clients.txt
+// Usa los fixtures dev xusers.txt (bob@example.com:abc123) y xclients.txt
 // (svc-demo / svc-noscope). No envía mail (SMTP desactivado).
 // Uso: bun scripts/smoke.js   (exit != 0 si algo falla)
 
@@ -62,15 +62,32 @@ try {
   let r = await call('GET', '/health')
   check('health', r.status === 200 && r.json?.ok === true, r.text.slice(0, 80))
 
-  // ---- Cognito OTP ----
+  // ---- Cognito: password real (bob, bcrypt) ----
   r = await call('POST', '/auth/otp/start', { json: { email: 'bob@example.com' } })
   check('cognito start', r.status === 200 && r.json?.ChallengeName === 'EMAIL_OTP', r.text.slice(0, 80))
   const sess = r.json?.Session
-  r = await call('POST', '/auth/otp/verify', { json: { session: sess, email: 'bob@example.com', code: 'abc123' } })
-  check('cognito verify', r.status === 200 && !!r.json?.AuthenticationResult?.AccessToken, r.text.slice(0, 80))
+  r = await call('POST', '/cognito/RespondToAuthChallenge', {
+    json: { Session: sess, ChallengeResponses: { USERNAME: 'bob@example.com', PASSWORD: 'abc123' } },
+  })
+  check('cognito password verify', r.status === 200 && !!r.json?.AuthenticationResult?.AccessToken, r.text.slice(0, 80))
   const cognitoAT = r.json?.AuthenticationResult?.AccessToken
   r = await call('GET', '/auth/me', { headers: { Authorization: `Bearer ${cognitoAT}` } })
   check('cognito me', r.status === 200 && r.json?.Username === 'bob@example.com', r.text.slice(0, 80))
+  r = await call('POST', '/cognito/RespondToAuthChallenge', {
+    json: { Session: sess, ChallengeResponses: { USERNAME: 'bob@example.com', PASSWORD: 'wrong' } },
+  })
+  check('cognito wrong password 400', r.status === 400, r.text.slice(0, 80))
+  r = await call('POST', '/cognito/RespondToAuthChallenge', {
+    json: { Session: sess, ChallengeResponses: { USERNAME: 'carol@example.com', PASSWORD: 'x' } },
+  })
+  check('cognito password not enabled 400', r.status === 400, r.text.slice(0, 80))
+  // ---- Cognito: legado estático (carol, sin mail) + OTP con mail (alice) ----
+  r = await call('POST', '/auth/otp/start', { json: { email: 'carol@example.com' } })
+  const sessC = r.json?.Session
+  r = await call('POST', '/auth/otp/verify', { json: { session: sessC, email: 'carol@example.com', code: 'staticdev' } })
+  check('cognito legacy static', r.status === 200 && !!r.json?.AuthenticationResult?.AccessToken, r.text.slice(0, 80))
+  r = await call('POST', '/auth/otp/start', { json: { email: 'alice@example.com' } })
+  check('cognito otp mail challenge', r.status === 200 && !!r.json?.Session, r.text.slice(0, 80))
   r = await call('POST', '/auth/otp/start', { json: { email: 'nadie@example.com' } })
   check('cognito unknown 400', r.status === 400 && r.json?.__type === 'NotAuthorizedException', r.text.slice(0, 80))
 
@@ -97,13 +114,19 @@ try {
   check('authorize form es (accept-language)', r.status === 200 && r.text.includes('Enviar código'), '')
   r = await call('POST', '/xid/oauth2/v2.0/authorize', { form: { ...OAUTH, email: 'bob@example.com' } })
   const otpSess = /name="otp_session" value="([^"]+)"/.exec(r.text)?.[1]
-  check('authorize otp step', r.status === 200 && !!otpSess, r.text.slice(0, 80))
+  check('authorize password step', r.status === 200 && !!otpSess && r.text.includes('kind="password"'), r.text.slice(0, 80))
   r = await call('POST', '/xid/oauth2/v2.0/authorize', {
-    form: { ...OAUTH, email: 'bob@example.com', code: 'abc123', otp_session: otpSess },
+    form: { ...OAUTH, email: 'bob@example.com', password: 'nope', otp_session: otpSess },
+  })
+  check('authorize wrong password', r.status === 400 && r.text.includes('Invalid password'), r.text.slice(0, 80))
+  r = await call('POST', '/xid/oauth2/v2.0/authorize', {
+    form: { ...OAUTH, email: 'bob@example.com', password: 'abc123', otp_session: otpSess },
   })
   const loc = r.headers.get('location') || ''
   const code = new URL(loc, ORIGIN).searchParams.get('code')
   check('authorize code 302', r.status === 302 && !!code, loc.slice(0, 80))
+  r = await call('POST', '/xid/oauth2/v2.0/authorize', { form: { ...OAUTH, mode: 'otp', email: 'bob@example.com' } })
+  check('authorize otp mode toggle', r.status === 200 && r.text.includes('Code sent to') && r.text.includes('mode=password'), r.text.slice(0, 120))
   const VERIFIER = 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk'
   r = await call('POST', '/xid/oauth2/v2.0/token', {
     form: { grant_type: 'authorization_code', code, redirect_uri: OAUTH.redirect_uri, client_id: 'pub-xid', code_verifier: VERIFIER },

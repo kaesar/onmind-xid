@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// Bootstrap: clients.txt → KV XID_CLIENTS (one-shot, hashes only).
+// Bootstrap: xclients.txt → KV XID_CLIENTS (one-shot, hashes only).
 // Uso:
 //   bun scripts/bootstrap-clients.js --apply
 // Sin --apply imprime las entradas que se escribirían (sin secretos).
@@ -11,12 +11,12 @@ import { fileURLToPath } from 'node:url'
 import { parseTxt } from '../src/clients.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const txtPath = path.resolve(process.env.XID_CLIENTS_TXT || path.join(__dirname, '..', 'clients.txt'))
+const txtPath = path.resolve(process.env.XID_CLIENTS_TXT || path.join(__dirname, '..', 'xclients.txt'))
 
 const apply = process.argv.includes('--apply')
 
 if (!fs.existsSync(txtPath)) {
-  console.error(`clients.txt not found: ${txtPath}`)
+  console.error(`xclients.txt not found: ${txtPath}`)
   process.exit(1)
 }
 

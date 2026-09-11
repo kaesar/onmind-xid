@@ -15,7 +15,7 @@
 // Desviaciones documentadas vs Entra real:
 //   - sub = email (estable); además oid = sha256(email), tid, preferred_username.
 //   - interactivo = clientes públicos (sin secret); B2B = client_credentials con
-//     secret (registro clients.txt / KV XID_CLIENTS, sub = client_id, sin id_token).
+//     secret (registro xclients.txt / KV XID_CLIENTS, sub = client_id, sin id_token).
 //   - PKCE S256 opcional pero verificado cuando el authorize lo envió.
 //   - Sin SAML/WS-Fed ni device_code.
 
@@ -26,6 +26,7 @@ import { verifyOtpSession, issueOtpSession, verifyAccessToken, denyJti } from '.
 import { sendMail, makeOtpMessage } from './mail.js'
 import { normalizeEmail, isValidEmail, maskEmail, sha256Hex, sleep } from './util.js'
 import { signRs256, verifyRs256, getPublicJwk } from './entra-keys.js'
+import { verifyPassword, checkPasswordRateLimit } from './passwords.js'
 import { cuiUrl } from './assets.js'
 import {
   getClient,
@@ -224,6 +225,13 @@ const STRINGS = {
     err_redirect: 'redirect_uri not allowed',
     redirect_hint: 'Set XID_REDIRECT_ALLOWLIST.',
     err_post_logout: 'post_logout_redirect_uri not allowed',
+    password: 'Password',
+    password_ph: 'Your password',
+    password_btn: 'Sign in with password',
+    password_for: 'Signing in as',
+    use_code_link: 'Use email code instead',
+    use_password_link: 'Use password instead',
+    err_invalid_password: 'Invalid password.',
   },
   es: {
     sign_in: 'Iniciar sesión',
@@ -249,6 +257,13 @@ const STRINGS = {
     err_redirect: 'redirect_uri no permitido',
     redirect_hint: 'Configura XID_REDIRECT_ALLOWLIST.',
     err_post_logout: 'post_logout_redirect_uri no permitido',
+    password: 'Contraseña',
+    password_ph: 'Tu contraseña',
+    password_btn: 'Entrar con contraseña',
+    password_for: 'Iniciando sesión como',
+    use_code_link: 'Usar código por email',
+    use_password_link: 'Usar contraseña',
+    err_invalid_password: 'Contraseña inválida.',
   },
 }
 
@@ -326,7 +341,7 @@ const CUI_BRIDGE = `<script>
 function pageShell(title, inner, env, lang = 'en') {
   return `<!doctype html><html lang="${lang === 'es' ? 'es' : 'en'}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title>` +
     cuiScript() +
-    `<style>html,body{margin:0;padding:0}body{font-family:system-ui,sans-serif;background:#0f172a;color:#e5e7eb;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1rem;box-sizing:border-box}.wrap{width:100%;max-width:24rem}as-box h1{font-size:1.25rem;margin:0 0 .25rem;color:#111827}as-box .muted{color:#6b7280;font-size:.85rem}as-box .err{background:#fde7e7;border:1px solid #f3b4b4;color:#7f1d1d;padding:.6rem .8rem;border-radius:.4rem}as-box as-button{display:block;margin-top:.9rem}as-box input[type=text],as-box input[type=email]{font-size:1rem;padding:.55rem .7rem;width:100%;box-sizing:border-box;margin-top:.5rem}as-box button[type=submit]{font-size:1rem;padding:.55rem 1rem;width:100%;box-sizing:border-box;cursor:pointer;margin-top:.9rem}</style></head><body><div class="wrap"><as-box>${inner}</as-box></div>${CUI_BRIDGE}</body></html>`
+    `<style>html,body{margin:0;padding:0}body{font-family:system-ui,sans-serif;background:#0f172a;color:#e5e7eb;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1rem;box-sizing:border-box}.wrap{width:100%;max-width:24rem}as-box h1{font-size:1.25rem;margin:0 0 .25rem;color:#111827}as-box .muted{color:#6b7280;font-size:.85rem}as-box .err{background:#fde7e7;border:1px solid #f3b4b4;color:#7f1d1d;padding:.6rem .8rem;border-radius:.4rem}as-box a{color:#1d4ed8}as-box as-button{display:block;margin-top:.9rem}as-box input[type=text],as-box input[type=email]{font-size:1rem;padding:.55rem .7rem;width:100%;box-sizing:border-box;margin-top:.5rem}as-box button[type=submit]{font-size:1rem;padding:.55rem 1rem;width:100%;box-sizing:border-box;cursor:pointer;margin-top:.9rem}</style></head><body><div class="wrap"><as-box>${inner}</as-box></div>${CUI_BRIDGE}</body></html>`
 
 }
 
@@ -354,7 +369,7 @@ function emailForm(oauth, { errorKey = '', email = '', env = {}, lang = 'en' } =
 
 // Sin input de email redundante: el email viaja en hidden (prefijado por el
 // servidor) y se muestra como texto ("Código enviado a …" / "Code sent to …").
-function codeForm(oauth, { errorKey = '', email = '', otpSession = '', sentTo = '', env = {}, lang = 'en' } = {}) {
+function codeForm(oauth, { errorKey = '', email = '', otpSession = '', sentTo = '', switchUrl = '', env = {}, lang = 'en' } = {}) {
   return pageShell(
     t(lang, 'verify_code'),
     `<h1>${esc(t(lang, 'verify_code'))}</h1>` +
@@ -364,7 +379,27 @@ function codeForm(oauth, { errorKey = '', email = '', otpSession = '', sentTo = 
       hiddenFields({ ...oauth, otp_session: otpSession }) +
       `<input type="hidden" name="email" value="${esc(email)}">` +
       `<as-input name="code" kind="text" label="${esc(t(lang, 'code_label'))}" placeholder="${esc(t(lang, 'code_ph'))}" value=""></as-input>` +
-      `<as-button label="${esc(t(lang, 'verify_btn'))}" variant="primary"></as-button></form>`,
+      `<as-button label="${esc(t(lang, 'verify_btn'))}" variant="primary"></as-button></form>` +
+      (switchUrl ? `<p class="muted"><a href="${esc(switchUrl)}">${esc(t(lang, 'use_password_link'))}</a></p>` : ''),
+    env,
+    lang
+  )
+}
+
+// Login con password real (bcrypt). Alternativa al OTP; el link cambia a OTP
+// (fallback ante olvido) sin perder los parámetros OAuth.
+function passwordForm(oauth, { errorKey = '', email = '', otpSession = '', switchUrl = '', env = {}, lang = 'en' } = {}) {
+  return pageShell(
+    t(lang, 'sign_in'),
+    `<h1>${esc(t(lang, 'sign_in'))}</h1>` +
+      (errorKey ? `<p class="err">${esc(t(lang, errorKey))}</p>` : '') +
+      `<p class="muted">${esc(t(lang, 'password_for'))} ${esc(email)}.</p>` +
+      `<form method="post" data-cui>` +
+      hiddenFields({ ...oauth, otp_session: otpSession }) +
+      `<input type="hidden" name="email" value="${esc(email)}">` +
+      `<as-input name="password" kind="password" label="${esc(t(lang, 'password'))}" placeholder="${esc(t(lang, 'password_ph'))}" value=""></as-input>` +
+      `<as-button label="${esc(t(lang, 'password_btn'))}" variant="primary"></as-button></form>` +
+      (switchUrl ? `<p class="muted"><a href="${esc(switchUrl)}">${esc(t(lang, 'use_code_link'))}</a></p>` : ''),
     env,
     lang
   )
@@ -381,7 +416,18 @@ function oauthPassthrough(query) {
     code_challenge_method: query.code_challenge_method || '',
     response_type: query.response_type || '',
     ui_locales: query.ui_locales || '',
+    mode: query.mode === 'password' || query.mode === 'otp' ? query.mode : '',
   }
+}
+
+// URL del propio authorize para los links de cambio password ⇄ OTP.
+function authorizeUrl(origin, tenant, oauth, overrides = {}) {
+  const u = new URL(`${origin}/${tenant}/oauth2/v2.0/authorize`)
+  const params = { ...oauth, ...overrides }
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== '') u.searchParams.set(k, v)
+  }
+  return u.toString()
 }
 
 // ---------------- handlers ----------------
@@ -412,7 +458,8 @@ export async function handleAuthorizeGet(c, tenantRaw) {
   if (oauth.response_type && oauth.response_type !== 'code' && !oauth.response_type.includes('code')) {
     return c.redirect(redirectWithParams(oauth.redirect_uri, { error: 'unsupported_response_type', error_description: 'only code supported', state: oauth.state }), 302)
   }
-  return c.html(emailForm(oauth, { env, lang }))
+  const prefill = typeof q.email === 'string' ? normalizeEmail(q.email) : ''
+  return c.html(emailForm(oauth, { email: isValidEmail(prefill) ? prefill : '', env, lang }))
 }
 
 export async function handleAuthorizePost(c, tenantRaw) {
@@ -421,8 +468,10 @@ export async function handleAuthorizePost(c, tenantRaw) {
   const body = await readBodyParams(c)
   const oauth = oauthPassthrough(body)
   const lang = pickLang(c.req.raw, oauth)
+  const origin = originOf(c.req.raw)
   const email = normalizeEmail(body.email)
   const code = typeof body.code === 'string' ? body.code.trim() : ''
+  const password = typeof body.password === 'string' ? body.password : ''
   const otpSession = typeof body.otp_session === 'string' ? body.otp_session : ''
 
   if (!oauth.client_id) {
@@ -436,32 +485,75 @@ export async function handleAuthorizePost(c, tenantRaw) {
 
   if (!isValidEmail(email)) return c.html(emailForm(oauth, { errorKey: 'err_invalid_email', email, env, lang }), 400)
 
-  // Paso 1: pide email → genera OTP y muestra form de código.
-  if (!code) {
+  // Paso 1: solo email → según el usuario y el modo: password (sin mail),
+  // OTP (con mail) o legado estático (sin mail, sin password).
+  if (!code && !password) {
     const user = await getUser(env, email)
     await sleep(180 + Math.floor(Math.random() * 220))
     if (!user) return c.html(emailForm(oauth, { errorKey: 'err_not_allowlisted', email, env, lang }), 403)
-    if (!user.otpKeyHash) {
-      const { code: otp } = await startOtp(env, email)
-      const msg = makeOtpMessage(otp, email, lang)
-      await sendMail(env, { to: email, subject: msg.subject, text: msg.text, code: msg.code })
-    }
     const session = await issueOtpSession(env, email)
-    return c.html(codeForm(oauth, { email, otpSession: session, sentTo: maskEmail(email), env, lang }))
+    const legacy = !!user.otpKeyHash && !user.passwordHash
+    if (legacy) {
+      return c.html(codeForm(oauth, { email, otpSession: session, sentTo: maskEmail(email), env, lang }))
+    }
+    if (user.passwordHash && oauth.mode !== 'otp') {
+      return c.html(
+        passwordForm(oauth, {
+          email,
+          otpSession: session,
+          switchUrl: authorizeUrl(origin, tenant, { ...oauth, mode: 'otp', email }),
+          env,
+          lang,
+        })
+      )
+    }
+    const { code: otp } = await startOtp(env, email)
+    const msg = makeOtpMessage(otp, email, lang)
+    await sendMail(env, { to: email, subject: msg.subject, text: msg.text, code: msg.code })
+    return c.html(
+      codeForm(oauth, {
+        email,
+        otpSession: session,
+        sentTo: maskEmail(email),
+        switchUrl: user.passwordHash
+          ? authorizeUrl(origin, tenant, { ...oauth, mode: 'password', email })
+          : '',
+        env,
+        lang,
+      })
+    )
   }
 
-  // Paso 2: verifica código → emite authorization code y redirige.
+  // Paso 2: verifica password (bcrypt) o código → emite authorization code.
   const user = await getUser(env, email)
   if (!user) return c.html(emailForm(oauth, { errorKey: 'err_not_authorized', email, env, lang }), 403)
   const sessionPayload = await verifyOtpSession(env, otpSession)
+  const switchToPassword = user.passwordHash
+    ? authorizeUrl(origin, tenant, { ...oauth, mode: 'password', email })
+    : ''
+  const switchToOtp = user.passwordHash
+    ? authorizeUrl(origin, tenant, { ...oauth, mode: 'otp', email })
+    : ''
   if (!sessionPayload || sessionPayload.sub !== email) {
-    return c.html(codeForm(oauth, { errorKey: 'err_session_expired', email, otpSession: '', env, lang }), 400)
+    return c.html(codeForm(oauth, { errorKey: 'err_session_expired', email, otpSession: '', switchUrl: switchToPassword, env, lang }), 400)
   }
-  const ok = await verifyOtp(env, email, code, user)
-  if (!ok) {
-    const left = await otpAttemptsLeft(env, email)
-    const errorKey = left <= 0 ? 'err_attempts' : 'err_code_invalid'
-    return c.html(codeForm(oauth, { errorKey, email, otpSession, env, lang }), 400)
+  if (password) {
+    if (!user.passwordHash) {
+      return c.html(passwordForm(oauth, { errorKey: 'err_not_authorized', email, otpSession, switchUrl: switchToOtp, env, lang }), 400)
+    }
+    if (!(await checkPasswordRateLimit(env, email))) {
+      return c.html(passwordForm(oauth, { errorKey: 'err_attempts', email, otpSession, switchUrl: switchToOtp, env, lang }), 400)
+    }
+    if (!(await verifyPassword(password, user.passwordHash))) {
+      return c.html(passwordForm(oauth, { errorKey: 'err_invalid_password', email, otpSession, switchUrl: switchToOtp, env, lang }), 400)
+    }
+  } else {
+    const ok = await verifyOtp(env, email, code, user)
+    if (!ok) {
+      const left = await otpAttemptsLeft(env, email)
+      const errorKey = left <= 0 ? 'err_attempts' : 'err_code_invalid'
+      return c.html(codeForm(oauth, { errorKey, email, otpSession, switchUrl: switchToPassword, env, lang }), 400)
+    }
   }
   const authCode = randomB64Url(32)
   await kvPut(

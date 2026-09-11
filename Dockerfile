@@ -1,5 +1,5 @@
 # OnMind-XID en contenedor (escenario VMs, alternativa a Cloudflare Worker).
-# Sin KV: usa adaptadores FS (userbase.txt/clients.txt, XID_FILES_ROOT) y
+# Sin KV: usa adaptadores FS (xusers.txt/xclients.txt, XID_FILES_ROOT) y
 # memoria para OTP/rate-limit/códigos. Pensado para 1 réplica (ver README).
 FROM oven/bun:1-slim
 
@@ -10,8 +10,9 @@ RUN bun install --production
 
 COPY src/ ./src/
 COPY vendor/ ./vendor/
-COPY userbase.txt.example ./userbase.txt.example
-COPY clients.txt.example ./clients.txt.example
+COPY xusers.txt.example ./xusers.txt.example
+COPY xclients.txt.example ./xclients.txt.example
+COPY cli/ ./cli/
 
 RUN useradd -m -u 10001 xid && \
     mkdir -p /data/files && \
@@ -20,8 +21,8 @@ USER xid
 
 ENV PORT=8787 \
     XID_ENV=production \
-    XID_USERS_TXT=/data/userbase.txt \
-    XID_CLIENTS_TXT=/data/clients.txt \
+    XID_USERS_TXT=/data/xusers.txt \
+    XID_CLIENTS_TXT=/data/xclients.txt \
     XID_FILES_ROOT=/data/files
 
 VOLUME /data

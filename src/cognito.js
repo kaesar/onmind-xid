@@ -2,6 +2,7 @@ import { kvIncr } from './kv.js'
 import { getUser } from './users.js'
 import { issueOtpSession, issueTokens, denyJti, verifyAccessToken, verifyOtpSession } from './session.js'
 import { startOtp, verifyOtp, otpAttemptsLeft } from './otp.js'
+import { verifyPassword, checkPasswordRateLimit } from './passwords.js'
 import { sendMail, makeOtpMessage } from './mail.js'
 import { maskEmail, sleep, normalizeEmail } from './util.js'
 import {
@@ -82,6 +83,24 @@ export async function respondToAuthChallenge(env, ctx, body) {
   const session = await verifyOtpSession(env, body?.Session)
   if (!session || session.sub !== email) {
     return { __type: 'NotAuthorizedException', message: 'Invalid session or username.', status: 400 }
+  }
+
+  // Password real (bcrypt) como alternativa al OTP: útil para scripts/tests.
+  // Requiere Session válida igual que el OTP (paso previo InitiateAuth).
+  const password = body?.ChallengeResponses?.PASSWORD
+  if (password !== undefined && password !== null && password !== '') {
+    if (!user.passwordHash) {
+      return { __type: 'NotAuthorizedException', message: 'Password login not enabled for this user.', status: 400 }
+    }
+    if (!(await checkPasswordRateLimit(env, email))) {
+      return { __type: 'TooManyRequestsException', message: 'Attempt limit exceeded, please try again later.', status: 400 }
+    }
+    if (!(await verifyPassword(password, user.passwordHash))) {
+      return { __type: 'NotAuthorizedException', message: 'Incorrect username or password.', status: 400 }
+    }
+    const clientId = clientIdFrom(body, env)
+    const authResult = await issueTokens(env, email, clientId)
+    return { AuthenticationResult: authResult }
   }
 
   const code = body?.ChallengeResponses?.EMAIL_OTP_CODE ?? body?.ChallengeResponses?.ANSWER

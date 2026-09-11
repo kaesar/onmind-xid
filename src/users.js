@@ -2,13 +2,14 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isValidEmail, normalizeEmail, sha256Hex } from './util.js'
+import { isBcryptHash } from './passwords.js'
 
 // Store de usuarios allowlisted:
 //  - Cloudflare: KV binding XID_USERS (key = email normalizado)
-//  - Local: userbase.txt (cargado a memoria, re-parsed si cambia en disco)
+//  - Local: xusers.txt (cargado a memoria, re-parsed si cambia en disco)
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const defaultsTxtPath = path.resolve(__dirname, '..', 'userbase.txt')
+const defaultsTxtPath = path.resolve(__dirname, '..', 'xusers.txt')
 
 let txtCache = null
 let txtCacheAt = 0
@@ -27,9 +28,14 @@ async function parseTxt(text) {
     }
     const email = normalizeEmail(emailRaw)
     if (!isValidEmail(email)) continue
+
+    // Segundo dato: hash bcrypt `$2b$` = password real (ver passwords.js).
+    // cualquier otro valor = clave estática legada dev (SHA-256 al cargar).
+    const passwordHash = staticKey && isBcryptHash(staticKey) ? staticKey : null
     users.set(email, {
       email,
-      otpKeyHash: staticKey ? await sha256Hex(staticKey) : null,
+      passwordHash,
+      otpKeyHash: staticKey && !passwordHash ? await sha256Hex(staticKey) : null,
     })
   }
   return users
@@ -62,7 +68,11 @@ export async function getUser(env, rawEmail) {
   if (kv && typeof kv.get === 'function') {
     const raw = await kv.get(email, 'json')
     if (!raw) return null
-    return { email: raw.email || email, otpKeyHash: raw.otpKeyHash || null }
+    return {
+      email: raw.email || email,
+      passwordHash: raw.passwordHash || null,
+      otpKeyHash: raw.otpKeyHash || null,
+    }
   }
   const users = await loadTxt(env)
   return users.get(email) || null

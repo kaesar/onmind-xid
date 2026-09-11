@@ -9,9 +9,12 @@
     "cf:dev": "wrangler dev",
     "cf:deploy": "wrangler deploy",
     "kv:bootstrap": "bun scripts/bootstrap-kv.js",
-    "smoke": "bun scripts/smoke.js"
+    "smoke": "bun scripts/smoke.js",
+    "cli": "bun cli/xid.js"
   },
   "dependencies": {
+    "@clack/prompts": "^1.8.0",
+    "bcryptjs": "^3.0.3",
     "hono": "^4"
   }
 }

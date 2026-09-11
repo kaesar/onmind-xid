@@ -1,0 +1,18 @@
+# xusers.txt — local allowlist (NOT versioned)
+#
+# Format:
+#   email                          → registered; OTP by mail (or Mailpit SMTP in dev)
+#   email:$2b$...                  → allowlist + real password (bcrypt, TinyAuth-compatible).
+#                                    Enables password login (Cognito PASSWORD / authorize
+#                                    mode=password) with email OTP kept as fallback.
+#                                    Generate with: bun run cli user password <email>
+#   email:key                      → legacy static dev key (SHA-256 on load, dev only).
+#
+# Comments (#) and blank lines are ignored. Emails are normalized (trim + lower).
+#
+# Examples:
+# alice@example.com
+# bob@example.com:$2b$10$z7OWovdf6s59S7M7xCLo1eN.YGF/Mb6t4nIbJWITaGmufrcJRS.he  (= abc123, dev only)
+
+alice@example.com
+bob@example.com:$2b$10$z7OWovdf6s59S7M7xCLo1eN.YGF/Mb6t4nIbJWITaGmufrcJRS.he

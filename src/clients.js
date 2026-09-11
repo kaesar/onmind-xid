@@ -3,7 +3,7 @@
 // No toca el registro de usuarios/allowlist: son identidades distintas (servicios).
 //
 // Almacén dual como users.js:
-//   - Local: clients.txt → `client_id:client_secret:scope1,scope2` (secretos dev).
+//   - Local: xclients.txt → `client_id:client_secret:scope1,scope2` (secretos dev).
 //   - Prod: KV XID_CLIENTS → { secretHash, scopes } (solo hashes, nunca secretos).
 // Hash: sha256(salt + ':' + secret), salt = sha256('xid-client:' + client_id).
 // Comparación en tiempo constante; los secretos nunca se loguean.
@@ -16,7 +16,7 @@ import { kvGet, kvPut, kvIncr } from './kv.js'
 import { signRs256 } from './entra-keys.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const defaultsTxtPath = path.resolve(__dirname, '..', 'clients.txt')
+const defaultsTxtPath = path.resolve(__dirname, '..', 'xclients.txt')
 
 export const FILES_READ_SCOPE = 'files.read'
 export const MACHINE_TOKEN_TTL = 3600 // s (1 h, igual que tokens de usuario)
