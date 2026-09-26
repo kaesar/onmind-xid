@@ -27,7 +27,7 @@ This is an **IdP/IAM** for [**OnMind-PUB**](https://github.com/kaesar/onmind-pub
 | 1 | **Allowlist, no open signup** | Minimal surface, no OTP spam to third parties. Onboarding = editing `xusers.txt` or writing KV. |
 | 2 | **Passwordless first, optional real password** | Single-use OTP (TTL ~5 min) by default; optional bcrypt `email:$2b$` password (TinyAuth-compatible) with OTP fallback; legacy **dev**-only static `email:key` (SHA-256 on load). |
 | 3 | **Cognito subset, not AWS** | `POST /` with `X-Amz-Target` + `/auth/otp/*` aliases. Ops: `InitiateAuth`, `RespondToAuthChallenge`, `GetUser`, `GlobalSignOut`. `SignUp` for 403. |
-| 4 | **HMAC JWT (`XID_JWT_SECRET`), no RefreshToken** | Access + Id (~1 h). Claims `sub` = email, `token_use` = `access` \| `id`. Less state; OTP re-login is cheap. |
+| 4 | **HMAC JWT (`XID_JWT_SECRET`) + RefreshToken opaco** | Access + Id (~1 h). Claims `sub` = email, `token_use` = `access` \| `id`. Refresh opaco (256 bits, 30 d deslizantes, un solo uso con rotación); `GlobalSignOut` revoca access (`jti` denylist) y todos los refresh del usuario. |
 | 5 | **Dual session channel** | Pages and the Worker don't share cookies. Vue stores the session in `sessionStorage.xidCurrentSession`. The file API uses `Authorization: Bearer` + an HttpOnly `xid_session` cookie on the Worker. |
 | 6 | **Static `email:key` for local only** | Hashed (SHA-256) on load; never logged. In prod `otpKeyHash` is optional and is **not** uploaded from dev. |
 | 7 | **Mail: Cloudflare Email Service in prod; Mailpit SMTP locally** | Native `send_email` binding on the Worker; SMTP to Mailpit (`localhost:1025`) in `bun run dev`. Fallback: stdout if `XID_ENV=dev`. |
@@ -47,6 +47,8 @@ flowchart LR
   subgraph worker [Cloudflare Worker xid]
     Hono[Hono index.js]
     Cog[cognito.js]
+    Entra[entra.js]
+    Flow[loginflow.js]
     Users[users.js]
     OTP[otp.js]
     Files[files.js]
@@ -63,14 +65,17 @@ flowchart LR
   Access -->|POST /auth/otp/*| Hono
   AsAccess -->|Bearer JWT GET /v1/files| Hono
   Hono --> Cog
+  Hono --> Entra
   Hono --> Files
-  Cog --> Users
-  Cog --> OTP
-  Cog --> Sess
+  Cog --> Flow
+  Entra --> Flow
+  Flow --> Users
+  Flow --> OTP
+  Flow --> Sess
+  Flow --> Mail
   Users --> Txt
   Users --> KVU
   OTP --> KVO
-  OTP --> Mail
   Files --> KVF
 ```
 
@@ -198,6 +203,40 @@ curl -s -X POST http://localhost:8787/auth/logout -H "Authorization: Bearer <Acc
 ```
 
 For a user with `email:key` (`bob@example.com:abc123`), `verify` accepts the key as the code (dev).
+
+## Testing the password flow (no mail needed)
+
+`start` con `password` no genera ni envía OTP: funciona sin SMTP (útil en
+despliegues sin relay, p. ej. contenedor en Azure).
+
+```bash
+# 1) start - devuelve Session sin enviar correo
+curl -s -X POST http://localhost:8787/auth/otp/start -H 'Content-Type: application/json' \
+  -d '{"email":"bob@example.com","password":"<secret>"}'
+# → {"ChallengeName":"EMAIL_OTP","Session":"<Session>","ChallengeParameters":{"USERNAME":"...","PASSWORD_ENABLED":"true"}}
+
+# 2) verify - AccessToken/IdToken
+curl -s -X POST http://localhost:8787/auth/otp/verify -H 'Content-Type: application/json' \
+  -d '{"session":"<Session>","email":"bob@example.com","password":"<secret>"}'
+```
+
+- Sin `password` en `start` → rama OTP clásica (envía correo; en `production`
+  sin SMTP responde 500).
+- `start` con `password` para un usuario sin hash → `Password login not enabled`.
+
+## Refresh flow (fachada Cognito)
+
+Cada login devuelve además `RefreshToken` (opaco, 30 días deslizantes).
+`POST /auth/refresh {"refreshToken"}` (o `InitiateAuth` con
+`AuthFlow: REFRESH_TOKEN_AUTH`) devuelve un `AuthenticationResult` nuevo y
+rota el refresh (el anterior queda inválido). `GlobalSignOut` revoca el access
+y todos los refresh del usuario.
+
+```bash
+curl -s -X POST http://localhost:8787/auth/refresh -H 'Content-Type: application/json' \
+  -d '{"refreshToken":"<RefreshToken>"}'
+# → {"AuthenticationResult":{"AccessToken":"...","IdToken":"...","RefreshToken":"..."}}
+```
 
 ### Health check
 

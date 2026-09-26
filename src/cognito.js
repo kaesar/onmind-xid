@@ -1,10 +1,8 @@
 import { kvIncr } from './kv.js'
 import { getUser } from './users.js'
-import { issueOtpSession, issueTokens, denyJti, verifyAccessToken, verifyOtpSession } from './session.js'
-import { startOtp, verifyOtp, otpAttemptsLeft } from './otp.js'
-import { verifyPassword, checkPasswordRateLimit } from './passwords.js'
-import { sendMail, makeOtpMessage } from './mail.js'
-import { maskEmail, sleep, normalizeEmail } from './util.js'
+import { issueTokenSet, consumeRefreshToken, revokeUserRefreshTokens, denyJti, verifyAccessToken } from './session.js'
+import { beginLogin, finishLogin, hasSecret } from './loginflow.js'
+import { maskEmail, normalizeEmail } from './util.js'
 import {
   getClient,
   verifyClientSecret,
@@ -39,6 +37,17 @@ function bearerToken(request) {
 }
 
 export async function initiateAuth(env, ctx, body) {
+  // Refresh (AuthFlow Cognito estándar): token opaco de un solo uso, con
+  // rotación. No requiere USERNAME; el email sale del propio refresh token.
+  if (body?.AuthFlow === 'REFRESH_TOKEN_AUTH') {
+    const rec = await consumeRefreshToken(env, body?.AuthParameters?.REFRESH_TOKEN)
+    if (!rec) return { __type: 'NotAuthorizedException', message: 'Invalid refresh token.', status: 400 }
+    const user = await getUser(env, rec.email)
+    if (!user) return { __type: 'NotAuthorizedException', message: 'Invalid refresh token.', status: 400 }
+    const clientId = rec.clientId || clientIdFrom(body, env)
+    return { AuthenticationResult: await issueTokenSet(env, rec.email, clientId) }
+  }
+
   const email = normalizeEmail(body?.AuthParameters?.USERNAME)
   if (!email) return { __type: 'NotAuthorizedException', message: 'Incorrect username or password.', status: 400 }
 
@@ -48,73 +57,55 @@ export async function initiateAuth(env, ctx, body) {
     return { __type: 'TooManyRequestsException', message: 'Attempt limit exceeded, please try again later.', status: 400 }
   }
 
-  const user = await getUser(env, email)
-  await sleep(180 + Math.floor(Math.random() * 220))
-
-  if (!user) {
+  // Sin PASSWORD → rama OTP clásica (con mail, fallback para usuarios con
+  // password). Con PASSWORD → sesión sin generar ni enviar OTP (sin mail).
+  const started = await beginLogin(env, email, {
+    passwordRequested: hasSecret(body?.AuthParameters?.PASSWORD) ? true : false,
+  })
+  if (!started.ok) {
+    if (started.reason === 'password_disabled') {
+      return { __type: 'NotAuthorizedException', message: 'Password login not enabled for this user.', status: 400 }
+    }
     return { __type: 'NotAuthorizedException', message: 'Incorrect username or password.', status: 400 }
   }
 
-  if (!user.otpKeyHash) {
-    const { code } = await startOtp(env, email)
-    const msg = makeOtpMessage(code, email)
-    await sendMail(env, { to: email, subject: msg.subject, text: msg.text, code: msg.code })
+  const params = {
+    USERNAME: started.email,
+    CODE_DELIVERY_DELIVERYMEDIUM: 'EMAIL',
+    CODE_DELIVERY_DESTINATION: maskEmail(started.email),
   }
-
-  const session = await issueOtpSession(env, email)
-  return {
-    ChallengeName: 'EMAIL_OTP',
-    Session: session,
-    ChallengeParameters: {
-      USERNAME: email,
-      CODE_DELIVERY_DELIVERYMEDIUM: 'EMAIL',
-      CODE_DELIVERY_DESTINATION: maskEmail(email),
-    },
-  }
+  if (started.mode === 'password') params.PASSWORD_ENABLED = 'true'
+  return { ChallengeName: 'EMAIL_OTP', Session: started.session, ChallengeParameters: params }
 }
 
 export async function respondToAuthChallenge(env, ctx, body) {
-  const email = normalizeEmail(body?.ChallengeResponses?.USERNAME)
-  if (!email) return { __type: 'NotAuthorizedException', message: 'Invalid session or username.', status: 400 }
-
-  const user = await getUser(env, email)
-  if (!user) return { __type: 'NotAuthorizedException', message: 'Invalid session or username.', status: 400 }
-
-  const session = await verifyOtpSession(env, body?.Session)
-  if (!session || session.sub !== email) {
-    return { __type: 'NotAuthorizedException', message: 'Invalid session or username.', status: 400 }
-  }
-
-  // Password real (bcrypt) como alternativa al OTP: útil para scripts/tests.
-  // Requiere Session válida igual que el OTP (paso previo InitiateAuth).
-  const password = body?.ChallengeResponses?.PASSWORD
-  if (password !== undefined && password !== null && password !== '') {
-    if (!user.passwordHash) {
-      return { __type: 'NotAuthorizedException', message: 'Password login not enabled for this user.', status: 400 }
+  const done = await finishLogin(env, {
+    email: body?.ChallengeResponses?.USERNAME,
+    session: body?.Session,
+    code: body?.ChallengeResponses?.EMAIL_OTP_CODE ?? body?.ChallengeResponses?.ANSWER,
+    password: body?.ChallengeResponses?.PASSWORD,
+  })
+  if (!done.ok) {
+    switch (done.reason) {
+      case 'password_disabled':
+        return { __type: 'NotAuthorizedException', message: 'Password login not enabled for this user.', status: 400 }
+      case 'password_locked':
+        return { __type: 'TooManyRequestsException', message: 'Attempt limit exceeded, please try again later.', status: 400 }
+      case 'bad_password':
+        return { __type: 'NotAuthorizedException', message: 'Incorrect username or password.', status: 400 }
+      case 'bad_code': {
+        const message = done.attemptsLeft <= 0
+          ? 'Attempt limit exceeded, please try again later.'
+          : 'Invalid verification code provided, please try again.'
+        return { __type: 'CodeMismatchException', message, status: 400 }
+      }
+      default:
+        return { __type: 'NotAuthorizedException', message: 'Invalid session or username.', status: 400 }
     }
-    if (!(await checkPasswordRateLimit(env, email))) {
-      return { __type: 'TooManyRequestsException', message: 'Attempt limit exceeded, please try again later.', status: 400 }
-    }
-    if (!(await verifyPassword(password, user.passwordHash))) {
-      return { __type: 'NotAuthorizedException', message: 'Incorrect username or password.', status: 400 }
-    }
-    const clientId = clientIdFrom(body, env)
-    const authResult = await issueTokens(env, email, clientId)
-    return { AuthenticationResult: authResult }
-  }
-
-  const code = body?.ChallengeResponses?.EMAIL_OTP_CODE ?? body?.ChallengeResponses?.ANSWER
-  const ok = await verifyOtp(env, email, code, user)
-  if (!ok) {
-    const left = await otpAttemptsLeft(env, email)
-    const message = left <= 0
-      ? 'Attempt limit exceeded, please try again later.'
-      : 'Invalid verification code provided, please try again.'
-    return { __type: 'CodeMismatchException', message, status: 400 }
   }
 
   const clientId = clientIdFrom(body, env)
-  const authResult = await issueTokens(env, email, clientId)
+  const authResult = await issueTokenSet(env, done.email, clientId)
   return { AuthenticationResult: authResult }
 }
 
@@ -138,7 +129,10 @@ export async function getUserOp(env, ctx, body) {
 export async function globalSignOut(env, ctx, body) {
   const token = body?.AccessToken || bearerToken(ctx?.request)
   const payload = await verifyAccessToken(env, token)
-  if (payload) await denyJti(env, payload.jti, payload.exp)
+  if (payload) {
+    await denyJti(env, payload.jti, payload.exp)
+    await revokeUserRefreshTokens(env, payload.sub)
+  }
   return {}
 }
 

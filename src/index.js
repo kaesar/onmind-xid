@@ -57,6 +57,7 @@ app.get('/', (c) => {
     endpoints: [
       'POST /auth/otp/start',
       'POST /auth/otp/verify',
+      'POST /auth/refresh',
       'GET /auth/me',
       'POST /auth/logout',
       'GET /v1/files?path=',
@@ -134,7 +135,10 @@ app.post('/auth/otp/start', (c) =>
     const b = tolerantBody(body)
     return initiateAuth(env, ctx, {
       AuthFlow: 'USER_AUTH',
-      AuthParameters: { USERNAME: b.email || b.AuthParameters?.USERNAME },
+      AuthParameters: {
+        USERNAME: b.email || b.AuthParameters?.USERNAME,
+        ...(b.password || b.AuthParameters?.PASSWORD ? { PASSWORD: b.password ?? b.AuthParameters?.PASSWORD } : {}),
+      },
     })
   })
 )
@@ -146,6 +150,7 @@ app.post('/auth/otp/verify', (c) =>
       ...(b.ChallengeResponses || {}),
       USERNAME: b.email || b.ChallengeResponses?.USERNAME,
       EMAIL_OTP_CODE: b.code ?? b.ChallengeResponses?.EMAIL_OTP_CODE,
+      ...(b.password || b.ChallengeResponses?.PASSWORD ? { PASSWORD: b.password ?? b.ChallengeResponses?.PASSWORD } : {}),
     }
     return respondToAuthChallenge(env, ctx, {
       Session: b.session || b.Session,
@@ -157,6 +162,20 @@ app.post('/auth/otp/verify', (c) =>
 app.get('/auth/me', (c) => callAuth(c, (env, ctx) => getUserOp(env, ctx, {})))
 
 app.post('/auth/logout', (c) => callAuth(c, (env, ctx, body) => globalSignOut(env, ctx, tolerantBody(body))))
+
+// Refresh Cognito (AuthFlow REFRESH_TOKEN_AUTH): { refreshToken } →
+// AuthenticationResult nuevo (Access + Id + Refresh rotado, un solo uso).
+app.post('/auth/refresh', (c) =>
+  callAuth(c, async (env, ctx, body) => {
+    const b = tolerantBody(body)
+    return initiateAuth(env, ctx, {
+      AuthFlow: 'REFRESH_TOKEN_AUTH',
+      AuthParameters: {
+        REFRESH_TOKEN: b.refreshToken || b.RefreshToken || b.AuthParameters?.REFRESH_TOKEN,
+      },
+    })
+  })
+)
 
 // ---------------- OAuth hosted-UI style (B2B client_credentials, forma Cognito) ----------------
 app.post('/oauth2/token', (c) => oauthToken(c))

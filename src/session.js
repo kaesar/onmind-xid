@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module'
 import { base64UrlDecode, base64urlEncode, constantTimeEqual } from './util.js'
-import { kvGet, kvPut } from './kv.js'
+import { kvDelete, kvGet, kvPut } from './kv.js'
 
 const require = createRequire(import.meta.url)
 
@@ -157,6 +157,76 @@ export async function denyJti(env, jti, expSec) {
   const ttl = Math.max(0, expSec - Math.floor(Date.now() / 1000))
   if (ttl <= 0) return
   await kvPut(env, `sess:${jti}`, '1', ttl)
+}
+
+// ---------------- Refresh tokens (fachada Cognito) ----------------
+// Opacos (256 bits), un solo uso con rotación en cada uso, TTL deslizante.
+// Índice por usuario para revocarlos todos en GlobalSignOut (best-effort).
+
+const REFRESH_TOKEN_TTL = 30 * 86400 // 30 d
+const MAX_REFRESH_PER_USER = 20
+
+const refreshKey = (token) => `cognito-refresh:${token}`
+const refreshIndexKey = (email) => `cognito-refresh-by-user:${email}`
+
+function randomB64Url(nbytes) {
+  const bytes = crypto.getRandomValues(new Uint8Array(nbytes))
+  let bin = ''
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i])
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+export async function issueRefreshToken(env, email, clientId) {
+  const token = randomB64Url(32)
+  await kvPut(env, refreshKey(token), { email, clientId }, REFRESH_TOKEN_TTL)
+  try {
+    const idx = (await kvGet(env, refreshIndexKey(email))) || []
+    idx.push(token)
+    await kvPut(env, refreshIndexKey(email), idx.slice(-MAX_REFRESH_PER_USER), REFRESH_TOKEN_TTL)
+  } catch {
+    // best-effort: el token individual ya quedó guardado
+  }
+  return token
+}
+
+// Un solo uso: devuelve { email, clientId } o null (inexistente o ya usado).
+export async function consumeRefreshToken(env, token) {
+  if (!token || typeof token !== 'string') return null
+  const rec = await kvGet(env, refreshKey(token))
+  if (!rec || !rec.email) return null
+  await kvDelete(env, refreshKey(token))
+  try {
+    const idx = (await kvGet(env, refreshIndexKey(rec.email))) || []
+    const rest = idx.filter((t) => t !== token)
+    if (rest.length !== idx.length) await kvPut(env, refreshIndexKey(rec.email), rest, REFRESH_TOKEN_TTL)
+  } catch {
+    // best-effort
+  }
+  return rec
+}
+
+export async function revokeUserRefreshTokens(env, email) {
+  if (!email) return
+  try {
+    const idx = (await kvGet(env, refreshIndexKey(email))) || []
+    for (const t of idx) {
+      try {
+        await kvDelete(env, refreshKey(t))
+      } catch {
+        // best-effort por token
+      }
+    }
+    await kvDelete(env, refreshIndexKey(email))
+  } catch {
+    // best-effort: logout no debe fallar por esto
+  }
+}
+
+// Triple completo Cognito: Access + Id + Refresh (con rotación en cada uso).
+export async function issueTokenSet(env, email, clientId) {
+  const base = await issueTokens(env, email, clientId)
+  const refreshToken = await issueRefreshToken(env, email, clientId)
+  return { ...base, RefreshToken: refreshToken }
 }
 
 const ACCESS_TOKEN_TTL = ACCESS_TTL

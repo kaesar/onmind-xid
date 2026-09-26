@@ -1,7 +1,8 @@
 // Fachada de simulación Microsoft Entra ID (OAuth2 v2.0 + OIDC) sobre el core XID.
 // Alternativa a cognito.js para el mismo escenario: OTP por email contra allowlist.
-// Reutiliza: users (allowlist), otp (códigos), session (otp_session + denylist),
-// mail (envío), kv (auth codes + refresh tokens).
+// Orquestación del login en loginflow.js (compartida con Cognito); aquí solo
+// render de formularios HTML y emisión de auth codes/tokens.
+// Reutiliza: loginflow (pasos begin/finish), users, session, kv, entra-keys.
 //
 // Endpoints (tenant = path param; 'common'/'organizations'/'consumers' → tid configurado):
 //   GET  /.well-known/openid-configuration
@@ -21,12 +22,10 @@
 
 import { kvGet, kvPut, kvDelete } from './kv.js'
 import { getUser } from './users.js'
-import { startOtp, verifyOtp, otpAttemptsLeft } from './otp.js'
-import { verifyOtpSession, issueOtpSession, verifyAccessToken, denyJti } from './session.js'
-import { sendMail, makeOtpMessage } from './mail.js'
-import { normalizeEmail, isValidEmail, maskEmail, sha256Hex, sleep } from './util.js'
+import { beginLogin, finishLogin } from './loginflow.js'
+import { verifyAccessToken, denyJti } from './session.js'
+import { normalizeEmail, isValidEmail, maskEmail, sha256Hex } from './util.js'
 import { signRs256, verifyRs256, getPublicJwk } from './entra-keys.js'
-import { verifyPassword, checkPasswordRateLimit } from './passwords.js'
 import { cuiUrl } from './assets.js'
 import {
   getClient,
@@ -359,7 +358,7 @@ function emailForm(oauth, { errorKey = '', email = '', env = {}, lang = 'en' } =
       (errorKey ? `<p class="err">${esc(t(lang, errorKey))}</p>` : '') +
       `<form method="post" data-cui>` +
       hiddenFields(oauth) +
-      `<as-input name="email" kind="email" label="${esc(t(lang, 'email'))}" placeholder="${esc(t(lang, 'email_ph'))}" value="${esc(email)}"></as-input>` +
+      `<as-input name="email" kind="email" autofocus label="${esc(t(lang, 'email'))}" placeholder="${esc(t(lang, 'email_ph'))}" value="${esc(email)}"></as-input>` +
       `<as-button label="${esc(t(lang, 'send_code'))}" variant="primary"></as-button></form>` +
       `<p class="muted">${esc(t(lang, 'otp_hint'))}</p>`,
     env,
@@ -378,7 +377,7 @@ function codeForm(oauth, { errorKey = '', email = '', otpSession = '', sentTo = 
       `<form method="post" data-cui>` +
       hiddenFields({ ...oauth, otp_session: otpSession }) +
       `<input type="hidden" name="email" value="${esc(email)}">` +
-      `<as-input name="code" kind="text" label="${esc(t(lang, 'code_label'))}" placeholder="${esc(t(lang, 'code_ph'))}" value=""></as-input>` +
+      `<as-input name="code" kind="text" autofocus label="${esc(t(lang, 'code_label'))}" placeholder="${esc(t(lang, 'code_ph'))}" value=""></as-input>` +
       `<as-button label="${esc(t(lang, 'verify_btn'))}" variant="primary"></as-button></form>` +
       (switchUrl ? `<p class="muted"><a href="${esc(switchUrl)}">${esc(t(lang, 'use_password_link'))}</a></p>` : ''),
     env,
@@ -397,7 +396,7 @@ function passwordForm(oauth, { errorKey = '', email = '', otpSession = '', switc
       `<form method="post" data-cui>` +
       hiddenFields({ ...oauth, otp_session: otpSession }) +
       `<input type="hidden" name="email" value="${esc(email)}">` +
-      `<as-input name="password" kind="password" label="${esc(t(lang, 'password'))}" placeholder="${esc(t(lang, 'password_ph'))}" value=""></as-input>` +
+      `<as-input name="password" kind="password" autofocus label="${esc(t(lang, 'password'))}" placeholder="${esc(t(lang, 'password_ph'))}" value=""></as-input>` +
       `<as-button label="${esc(t(lang, 'password_btn'))}" variant="primary"></as-button></form>` +
       (switchUrl ? `<p class="muted"><a href="${esc(switchUrl)}">${esc(t(lang, 'use_code_link'))}</a></p>` : ''),
     env,
@@ -485,37 +484,32 @@ export async function handleAuthorizePost(c, tenantRaw) {
 
   if (!isValidEmail(email)) return c.html(emailForm(oauth, { errorKey: 'err_invalid_email', email, env, lang }), 400)
 
-  // Paso 1: solo email → según el usuario y el modo: password (sin mail),
-  // OTP (con mail) o legado estático (sin mail, sin password).
+  // Paso 1: solo email → beginLogin decide modo (password sin mail, OTP con
+  // mail, legado sin mail). ?mode=password fuerza password; ?mode=otp fuerza
+  // OTP (para legado ya no envía correo: la key estática basta).
   if (!code && !password) {
-    const user = await getUser(env, email)
-    await sleep(180 + Math.floor(Math.random() * 220))
-    if (!user) return c.html(emailForm(oauth, { errorKey: 'err_not_allowlisted', email, env, lang }), 403)
-    const session = await issueOtpSession(env, email)
-    const legacy = !!user.otpKeyHash && !user.passwordHash
-    if (legacy) {
-      return c.html(codeForm(oauth, { email, otpSession: session, sentTo: maskEmail(email), env, lang }))
+    const requested = oauth.mode === 'password' ? true : oauth.mode === 'otp' ? false : undefined
+    const started = await beginLogin(env, email, { passwordRequested: requested, lang })
+    if (!started.ok) {
+      return c.html(emailForm(oauth, { errorKey: 'err_not_allowlisted', email, env, lang }), 403)
     }
-    if (user.passwordHash && oauth.mode !== 'otp') {
+    if (started.mode === 'password') {
       return c.html(
         passwordForm(oauth, {
           email,
-          otpSession: session,
+          otpSession: started.session,
           switchUrl: authorizeUrl(origin, tenant, { ...oauth, mode: 'otp', email }),
           env,
           lang,
         })
       )
     }
-    const { code: otp } = await startOtp(env, email)
-    const msg = makeOtpMessage(otp, email, lang)
-    await sendMail(env, { to: email, subject: msg.subject, text: msg.text, code: msg.code })
     return c.html(
       codeForm(oauth, {
         email,
-        otpSession: session,
+        otpSession: started.session,
         sentTo: maskEmail(email),
-        switchUrl: user.passwordHash
+        switchUrl: started.user.passwordHash
           ? authorizeUrl(origin, tenant, { ...oauth, mode: 'password', email })
           : '',
         env,
@@ -525,36 +519,40 @@ export async function handleAuthorizePost(c, tenantRaw) {
   }
 
   // Paso 2: verifica password (bcrypt) o código → emite authorization code.
-  const user = await getUser(env, email)
-  if (!user) return c.html(emailForm(oauth, { errorKey: 'err_not_authorized', email, env, lang }), 403)
-  const sessionPayload = await verifyOtpSession(env, otpSession)
+  const done = await finishLogin(env, { email, session: otpSession, code, password })
+  if (!done.ok) {
+    const user = done.user || null
+    const switchToPassword = user?.passwordHash
+      ? authorizeUrl(origin, tenant, { ...oauth, mode: 'password', email })
+      : ''
+    const switchToOtp = user?.passwordHash
+      ? authorizeUrl(origin, tenant, { ...oauth, mode: 'otp', email })
+      : ''
+    if (done.reason === 'bad_session') {
+      return c.html(codeForm(oauth, { errorKey: 'err_session_expired', email, otpSession: '', switchUrl: switchToPassword, env, lang }), 400)
+    }
+    if (done.reason === 'bad_code') {
+      const errorKey = done.attemptsLeft <= 0 ? 'err_attempts' : 'err_code_invalid'
+      return c.html(codeForm(oauth, { errorKey, email, otpSession, switchUrl: switchToPassword, env, lang }), 400)
+    }
+    if (done.reason === 'password_locked') {
+      return c.html(passwordForm(oauth, { errorKey: 'err_attempts', email, otpSession, switchUrl: switchToOtp, env, lang }), 400)
+    }
+    if (done.reason === 'bad_password') {
+      return c.html(passwordForm(oauth, { errorKey: 'err_invalid_password', email, otpSession, switchUrl: switchToOtp, env, lang }), 400)
+    }
+    if (done.reason === 'password_disabled') {
+      return c.html(passwordForm(oauth, { errorKey: 'err_not_authorized', email, otpSession, switchUrl: switchToOtp, env, lang }), 400)
+    }
+    return c.html(emailForm(oauth, { errorKey: 'err_not_authorized', email, env, lang }), 403)
+  }
+  const user = done.user
   const switchToPassword = user.passwordHash
     ? authorizeUrl(origin, tenant, { ...oauth, mode: 'password', email })
     : ''
   const switchToOtp = user.passwordHash
     ? authorizeUrl(origin, tenant, { ...oauth, mode: 'otp', email })
     : ''
-  if (!sessionPayload || sessionPayload.sub !== email) {
-    return c.html(codeForm(oauth, { errorKey: 'err_session_expired', email, otpSession: '', switchUrl: switchToPassword, env, lang }), 400)
-  }
-  if (password) {
-    if (!user.passwordHash) {
-      return c.html(passwordForm(oauth, { errorKey: 'err_not_authorized', email, otpSession, switchUrl: switchToOtp, env, lang }), 400)
-    }
-    if (!(await checkPasswordRateLimit(env, email))) {
-      return c.html(passwordForm(oauth, { errorKey: 'err_attempts', email, otpSession, switchUrl: switchToOtp, env, lang }), 400)
-    }
-    if (!(await verifyPassword(password, user.passwordHash))) {
-      return c.html(passwordForm(oauth, { errorKey: 'err_invalid_password', email, otpSession, switchUrl: switchToOtp, env, lang }), 400)
-    }
-  } else {
-    const ok = await verifyOtp(env, email, code, user)
-    if (!ok) {
-      const left = await otpAttemptsLeft(env, email)
-      const errorKey = left <= 0 ? 'err_attempts' : 'err_code_invalid'
-      return c.html(codeForm(oauth, { errorKey, email, otpSession, switchUrl: switchToPassword, env, lang }), 400)
-    }
-  }
   const authCode = randomB64Url(32)
   await kvPut(
     env,

@@ -71,6 +71,23 @@ try {
   })
   check('cognito password verify', r.status === 200 && !!r.json?.AuthenticationResult?.AccessToken, r.text.slice(0, 80))
   const cognitoAT = r.json?.AuthenticationResult?.AccessToken
+  const cognitoRT = r.json?.AuthenticationResult?.RefreshToken
+  check('cognito login returns refresh', !!cognitoRT, r.text.slice(0, 80))
+  r = await call('POST', '/auth/refresh', { json: { refreshToken: cognitoRT } })
+  check('cognito refresh ok', r.status === 200 && !!r.json?.AuthenticationResult?.AccessToken, r.text.slice(0, 80))
+  const cognitoAT2 = r.json?.AuthenticationResult?.AccessToken
+  const cognitoRT2 = r.json?.AuthenticationResult?.RefreshToken
+  check('cognito refresh rotates', !!cognitoRT2 && cognitoRT2 !== cognitoRT, r.text.slice(0, 80))
+  r = await call('POST', '/auth/refresh', { json: { refreshToken: cognitoRT } })
+  check('cognito refresh reuse 400', r.status === 400, r.text.slice(0, 80))
+  r = await call('POST', '/auth/refresh', { json: { refreshToken: 'bogus' } })
+  check('cognito refresh bogus 400', r.status === 400, r.text.slice(0, 80))
+  r = await call('POST', '/auth/logout', { headers: { Authorization: `Bearer ${cognitoAT2}` } })
+  check('cognito logout 200', r.status === 200, r.text.slice(0, 80))
+  r = await call('POST', '/auth/refresh', { json: { refreshToken: cognitoRT2 } })
+  check('cognito refresh revoked after logout', r.status === 400, r.text.slice(0, 80))
+  r = await call('GET', '/auth/me', { headers: { Authorization: `Bearer ${cognitoAT2}` } })
+  check('cognito me denied after logout', r.status === 400, r.text.slice(0, 80))
   r = await call('GET', '/auth/me', { headers: { Authorization: `Bearer ${cognitoAT}` } })
   check('cognito me', r.status === 200 && r.json?.Username === 'bob@example.com', r.text.slice(0, 80))
   r = await call('POST', '/cognito/RespondToAuthChallenge', {
