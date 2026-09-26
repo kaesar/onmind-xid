@@ -14,9 +14,9 @@ import {
   issueMachineToken,
 } from './clients.js'
 
-// Subconjunto de Cognito Identity Provider + alias REST (ver xid/PLAN.md).
-// Contrato: los handlers devuelven o bien la respuesta JSON de éxito, o bien
-// { __type, message, status } que index.js convierte a HTTP 4xx igual que IdP.
+// Cognito Identity Provider subset + REST aliases (see xid/PLAN.md).
+// Contract: handlers return either the success JSON payload or
+// { __type, message, status } which index.js maps to HTTP 4xx, like a real IdP.
 
 const RATE_INITIATE_PER_EMAIL = 5
 const RATE_INITIATE_PER_IP = 20
@@ -26,10 +26,6 @@ function clientIdFrom(body, env) {
   return body?.ClientId || env?.XID_CLIENT_ID || process.env.XID_CLIENT_ID || 'pub-xid'
 }
 
-function ipOf(request) {
-  return request?.headers?.get('cf-connecting-ip') || 'local'
-}
-
 function bearerToken(request) {
   const header = request?.headers?.get('authorization') || ''
   const m = /^Bearer\s+(.+)$/i.exec(header)
@@ -37,8 +33,8 @@ function bearerToken(request) {
 }
 
 export async function initiateAuth(env, ctx, body) {
-  // Refresh (AuthFlow Cognito estándar): token opaco de un solo uso, con
-  // rotación. No requiere USERNAME; el email sale del propio refresh token.
+  // Refresh (standard Cognito AuthFlow): opaque single-use token with
+  // rotation. USERNAME is not required; the email comes from the refresh token.
   if (body?.AuthFlow === 'REFRESH_TOKEN_AUTH') {
     const rec = await consumeRefreshToken(env, body?.AuthParameters?.REFRESH_TOKEN)
     if (!rec) return { __type: 'NotAuthorizedException', message: 'Invalid refresh token.', status: 400 }
@@ -52,19 +48,26 @@ export async function initiateAuth(env, ctx, body) {
   if (!email) return { __type: 'NotAuthorizedException', message: 'Incorrect username or password.', status: 400 }
 
   const emailCount = await kvIncr(env, `rl:email:${email}`, RATE_WINDOW)
-  const ipCount = await kvIncr(env, `rl:ip:${ipOf(ctx?.request)}`, RATE_WINDOW)
+  const ipCount = await kvIncr(env, `rl:ip:${m2mIpOf(ctx?.request)}`, RATE_WINDOW)
   if (emailCount > RATE_INITIATE_PER_EMAIL || ipCount > RATE_INITIATE_PER_IP) {
     return { __type: 'TooManyRequestsException', message: 'Attempt limit exceeded, please try again later.', status: 400 }
   }
 
-  // Sin PASSWORD → rama OTP clásica (con mail, fallback para usuarios con
-  // password). Con PASSWORD → sesión sin generar ni enviar OTP (sin mail).
+  // No PASSWORD → classic OTP branch (mail, fallback for users with a
+  // password). With PASSWORD → session without generating/sending an OTP (no mail).
   const started = await beginLogin(env, email, {
     passwordRequested: hasSecret(body?.AuthParameters?.PASSWORD) ? true : false,
   })
   if (!started.ok) {
     if (started.reason === 'password_disabled') {
       return { __type: 'NotAuthorizedException', message: 'Password login not enabled for this user.', status: 400 }
+    }
+    if (started.reason === 'mail_unavailable') {
+      return {
+        __type: 'InvalidParameterException',
+        message: 'Email delivery is not configured on this deployment; password login required.',
+        status: 400,
+      }
     }
     return { __type: 'NotAuthorizedException', message: 'Incorrect username or password.', status: 400 }
   }
@@ -141,9 +144,9 @@ export function signUpStub(env, ctx) {
 }
 
 // OAuth hosted-UI style token endpoint (B2B): POST /oauth2/token.
-// Como el Cognito real, NO va por X-Amz-Target: Basic (o body) + solo
-// grant_type=client_credentials. Respuesta y errores en forma OAuth (minúsculas).
-// Requiere Hono `c` (status + headers como WWW-Authenticate), no el shape IdP.
+// Like real Cognito, NOT via X-Amz-Target: Basic (or body) + only
+// grant_type=client_credentials. Response and errors in OAuth shape (lowercase).
+// Requires the Hono `c` (status + headers like WWW-Authenticate), not the IdP shape.
 export async function oauthToken(c) {
   const env = c.env || {}
   const ct = c.req.header('content-type') || ''

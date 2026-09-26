@@ -1,11 +1,21 @@
 # OnMind-XID — eXpress IDentity for access
 
-> A simple alternative to **OnMind-UID** (another private project) designed mainly for [**OnMind-PUB**](https://github.com/kaesar/onmind-pub) and **Cloudflare** (containers as alternative).
+> A simple alternative to **OnMind-UID** (another private project) designed mainly for [**OnMind-PUB**](https://github.com/kaesar/onmind-pub) and **Cloudflare** (containers and AWS Lambda as alternatives).
 
 This is an **IdP/IAM** for [**OnMind-PUB**](https://github.com/kaesar/onmind-pub). Thinked as worker (in **Hono**) with a **Cognito-compatible API** (subset, even **Entra ID compatible**) for **email OTP** authentication against an **allowlist**, plus an authenticated **file manager** for `hide: 2` articles. Besides could be used with WebApps, AI and machine to machine (M2M/B2B) for API's.
 
 - Runs locally with **Bun** (to test use **Mailpit** for SMTP).
 - Deploys as a **Cloudflare Worker** (and **Cloudflare Email Service** via the `send_email` binding).
+- Deploys to **AWS Lambda** (Node.js ≥ 20) with **DynamoDB** as an alternative runtime
+  (Function URL or API Gateway; OTP mail not configured yet → password-only).
+
+Same Hono core everywhere; only the entrypoint and the bindings differ:
+
+| Runtime | Entrypoint | Storage bindings | Mail |
+| --- | --- | --- | --- |
+| Local / container (Bun) | `src/dev.js` → `Bun.serve` | none → txt (`xusers.txt`/`xclients.txt`) + in-memory `Map` + FS | SMTP (Mailpit) / console in dev |
+| Cloudflare Worker | `src/index.js` → `export default { fetch }` (`wrangler deploy`) | KV `XID_META`/`XID_USERS`/`XID_CLIENTS`/`XID_FILES` | Cloudflare Email Service (`send_email`) |
+| AWS Lambda | `src/lambda.js` → `src/lambda.handler` (Function URL / API GW v2) | DynamoDB `xmeta`/`xusers`/`xclients` (`XID_*_TABLE`, `XID_DYNAMO_ENDPOINT` for LocalStack/dynamodb-local) | none yet → password login only |
 
 ---
 
@@ -354,7 +364,8 @@ bun run cli client list
 
 Flags: `--users <path>` / `--clients <path>` (default `XID_USERS_TXT` /
 `XID_CLIENTS_TXT` or repo files). Non-TTY mode never prompts: it fails fast
-except `--gen`/OTP-only defaults. For prod KV, run the bootstrap scripts after.
+except `--gen`/OTP-only defaults. For prod, run the bootstrap scripts after
+(`kv:bootstrap` for Cloudflare KV, `kv:dynamo` for AWS DynamoDB).
 
 ## Environment variables
 
@@ -369,6 +380,8 @@ except `--gen`/OTP-only defaults. For prod KV, run the bootstrap scripts after.
 | `XID_USERS_TXT` | alternative path to `xusers.txt` |
 | `XID_CLIENTS_TXT` | alternative path to `xclients.txt` |
 | `XID_FILES_ROOT` | local files root (default `./files`) |
+| `XID_META_TABLE` / `XID_USERS_TABLE` / `XID_CLIENTS_TABLE` | Lambda: DynamoDB table per binding (defaults `xmeta`/`xusers`/`xclients`, `none` = disabled) |
+| `XID_DYNAMO_ENDPOINT` | Lambda/tests: custom DynamoDB endpoint (e.g. local) |
 | `XID_ENV` | `dev` (console fallback) \| `production` |
 | `XID_RSA_PRIVATE_JWK` | RSA private JWK (`bun scripts/gen-rsa-jwk.js`); ephemeral in dev if missing |
 | `XID_TENANT_ID` | `tid` for `common`/`organizations`/`consumers` (default `xid`) |
@@ -439,6 +452,77 @@ Notes: the image defaults to `XID_ENV=production` with FS paths under `/data`
 (override via env); with `production` OTP email requires a reachable SMTP —
 static `email:key` users skip mail (dev only). Secrets via env/vault, never baked in.
 
+## AWS Lambda + DynamoDB (alternative to Cloudflare)
+
+Same Hono app served by **AWS Lambda** (Node.js ≥ 20) with **DynamoDB** backing
+the three KV bindings. `src/dynamo.js` implements the *same duck-typed interface*
+as the Cloudflare KV binding (`get`/`get|json`/`put{expirationTtl}`/`delete`), so
+`kv.js` / `users.js` / `clients.js` stay untouched — runtime detection is just
+"binding exists or not".
+
+| CF binding | DynamoDB table (default) | Override |
+| --- | --- | --- |
+| `XID_META` | `xmeta` (TTL attribute `ttl`, also enforced on read — DynamoDB TTL is lazy) | `XID_META_TABLE` |
+| `XID_USERS` | `xusers` | `XID_USERS_TABLE` |
+| `XID_CLIENTS` | `xclients` | `XID_CLIENTS_TABLE` |
+
+> `XID_*_TABLE=none` disables a binding → falls back to the local adapter
+> (txt / in-memory `Map` / FS). `XID_DYNAMO_ENDPOINT` points to a local
+> DynamoDB (tests).
+
+**Entry point:** `src/lambda.js` → handler **`src/lambda.handler`** (ESM,
+`"type": "module"`). The app env = `process.env` + the three bindings;
+`XID_ENV` defaults to `production` on Lambda.
+
+**No SES for now → password login only.** There is no mail transport on
+Lambda, so passwordless (OTP) requests fail fast with
+`400 Email delivery is not configured on this deployment; password login required.`
+Users in `xusers` need a bcrypt password (`email:$2b$…`). Enable `mode=otp`
+later by adding SES/SMTP — the code path is already there.
+
+```bash
+export AWS_REGION=eu-west-1 XID_JWT_SECRET=$(openssl rand -hex 32)
+bun run kv:dynamo --create          # tablas xusers / xclients / xmeta (TTL en xmeta)
+bun run kv:dynamo --apply           # xusers.txt + xclients.txt → tablas (hashes, nunca secretos)
+bun run kv:dynamo                   # dry-run: imprime las entradas sin escribir
+```
+
+Deploy notes (zip o imagen; el artefacto incluye `src/`, `vendor/` y `files/`):
+
+- Runtime `nodejs20.x`, handler `src/lambda.handler`; dependencias instaladas
+  (`@aws-sdk/client-dynamodb` solo se usa aquí — no entra en el bundle del Worker).
+- Trigger: **Function URL** (auth NONE) o API Gateway HTTP API (payload v2) —
+  ambos los soporta `hono/aws-lambda`.
+- Secrets por env vars: `XID_JWT_SECRET`, `XID_REDIRECT_ALLOWLIST`,
+  `XID_CORS_ORIGINS`, `XID_RSA_PRIVATE_JWK` (si falta: par efímero dev).
+- Rate limit por IP usa `x-forwarded-for` (Function URL/API GW); en Cloudflare
+  sigue siendo `cf-connecting-ip`.
+- Files y assets de login se sirven del FS (`XID_FILES_ROOT`, `vendor/cui/`):
+  no hay binding `XID_FILES` en Lambda.
+
+## Storage: KV bindings (`XID_*`)
+
+Four KV namespaces on the Worker (`wrangler.toml`); each one is optional — if the
+binding is absent the file/memory adapter applies instead (detection: binding
+exists and has `.get`).
+
+| Binding | Contents | TTL | Local fallback (no binding) |
+| --- | --- | --- | --- |
+| `XID_META` | Ephemeral **session state**, prefixed keys: `otp:<email>` (pending code hash + attempts), `sess:<jti>` (logout denylist, checked on every token verification), `cognito-refresh:*` / Entra `refresh`+`code` (single use with rotation), `rl:*` rate-limit counters | 5 min – 30 d | In-memory `Map` (lost on restart / `--hot` reload) |
+| `XID_USERS` | Allowlist, key = normalized email, value = `{passwordHash, otpKeyHash}` (bootstrapped from `xusers.txt`) | — | `xusers.txt` (FS) |
+| `XID_CLIENTS` | Machine clients for B2B, **secret hashes only** (from `xclients.txt`) | — | `xclients.txt` (FS) |
+| `XID_FILES` | File **contents** keyed by relative path: `cui/*` (login bundle) and `hide: 2` markdown articles | — | `vendor/cui/` and `XID_FILES_ROOT` (default `./files`) |
+
+> **Name collision:** `XID_FILES` inside OnMind-PUB's `.env` is a *different*,
+> numeric flag (`0`/`1`) telling `AsAccess.vue` to fetch article bodies from the
+> Worker. The Worker-side `XID_FILES` is the KV namespace that *holds* those
+> bodies.
+
+> `XID_META` is the only one needing real TTL semantics (rate limits, single-use
+> OTP/refresh, denylist); the other three are persistent configuration/content.
+> On **AWS Lambda** the same three bindings are backed by DynamoDB tables
+> (`xmeta`/`xusers`/`xclients`) — see the Lambda section above.
+
 ## OnMind-PUB integration
 
 For [**OnMind-PUB**](https://github.com/kaesar/onmind-pub), in `sites/<site>/.env` includes the following:
@@ -450,11 +534,14 @@ XID_CLIENT_ID=pub-xid
 XID_FILES=0
 ```
 
-> `AsAccess.vue` unlocks `hide: 2` with a session. Without a session it redirects to `/access?next=`.  
-> `XID_FILES=1` also fetches the body to the Worker. `XID_URL` could be the deployed worker address.
+Considering the following:
+
+- `AsAccess.vue` unlocks `hide: 2` with a session. Without a session it redirects to `/access?next=`.  
+-`XID_FILES=1` (PUB's **own** build flag read in `site-config.mjs` — not the Worker KV binding of the same name above) makes the client also fetch the body via
+- `GET {XID_URL}/v1/files?path=` and inject it. `XID_URL` could be the deployed worker address.
 
 ---
 
 ## Status
 
-Implemented and verified locally (Bun + Mailpit): end-to-end OTP flow, JWT tokens, `/auth/me`, files (200/401/404/traversal 400), CORS, PUB build with `PUB_XID=1`. Reproducible smoke suite: `bun run smoke` (31 checks in-process, no ports). Deploy configuration still **pending** (Cloudflare Email, KV IDs, secrets).
+Implemented and verified locally (Bun + Mailpit): end-to-end OTP flow, JWT tokens, `/auth/me`, files (200/401/404/traversal 400), CORS, PUB build with `PUB_XID=1`. Reproducible smoke suite: `bun run smoke` (48 checks in-process, no ports). Deploy configuration still **pending** (Cloudflare Email, KV IDs, secrets).

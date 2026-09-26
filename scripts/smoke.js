@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
-// Humo e2e en proceso (sin puertos ni red): ejerce app.fetch directamente.
-// Usa los fixtures dev xusers.txt (bob@example.com:abc123) y xclients.txt
-// (svc-demo / svc-noscope). No envía mail (SMTP desactivado).
-// Uso: bun scripts/smoke.js   (exit != 0 si algo falla)
+// In-process e2e smoke test (no ports, no network): exercises app.fetch directly.
+// Uses the dev fixtures xusers.txt (bob: password abc123, carol: static key)
+// and xclients.txt (svc-demo / svc-noscope). Sends no mail (SMTP disabled).
+// Usage: bun scripts/smoke.js   (exit != 0 if anything fails)
 
 import { app } from '../src/index.js'
 import fs from 'node:fs'
@@ -15,6 +15,7 @@ const env = {
   XID_SMTP_DISABLED: '1',
   XID_JWT_SECRET: '0123456789abcdef0123456789abcdef',
 }
+process.env.XID_SMTP_DISABLED = '1' // mail.js reads process.env: deterministic even if Mailpit is running
 const ORIGIN = 'http://localhost:8787'
 const BASIC = (id, secret) => 'Basic ' + Buffer.from(`${id}:${secret}`).toString('base64')
 
@@ -51,18 +52,18 @@ async function call(method, p, { query = '', form = null, json = null, headers =
   return { status: res.status, headers: res.headers, text, json: data }
 }
 
-// Ficheros: root temporal con un secreto (se borra al final).
+// Files: temp root with a secret (removed at the end).
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xid-smoke-'))
 fs.mkdirSync(path.join(tmpRoot, 'docs'), { recursive: true })
 fs.writeFileSync(path.join(tmpRoot, 'docs', 'secret.md'), '# Secreto\n')
 env.XID_FILES_ROOT = tmpRoot
 
 try {
-  // ---- humo base ----
+  // ---- base smoke ----
   let r = await call('GET', '/health')
   check('health', r.status === 200 && r.json?.ok === true, r.text.slice(0, 80))
 
-  // ---- Cognito: password real (bob, bcrypt) ----
+  // ---- Cognito: real password (bob, bcrypt) ----
   r = await call('POST', '/auth/otp/start', { json: { email: 'bob@example.com' } })
   check('cognito start', r.status === 200 && r.json?.ChallengeName === 'EMAIL_OTP', r.text.slice(0, 80))
   const sess = r.json?.Session
@@ -98,7 +99,7 @@ try {
     json: { Session: sess, ChallengeResponses: { USERNAME: 'carol@example.com', PASSWORD: 'x' } },
   })
   check('cognito password not enabled 400', r.status === 400, r.text.slice(0, 80))
-  // ---- Cognito: legado estático (carol, sin mail) + OTP con mail (alice) ----
+  // ---- Cognito: static legacy (carol, no mail) + OTP with mail (alice) ----
   r = await call('POST', '/auth/otp/start', { json: { email: 'carol@example.com' } })
   const sessC = r.json?.Session
   r = await call('POST', '/auth/otp/verify', { json: { session: sessC, email: 'carol@example.com', code: 'staticdev' } })
@@ -115,7 +116,7 @@ try {
   r = await call('GET', '/xid/discovery/v2.0/keys')
   check('jwks', r.status === 200 && r.json?.keys?.[0]?.kty === 'RSA', r.text.slice(0, 80))
 
-  // ---- Entra interactivo + PKCE S256 (vector RFC 7636) ----
+  // ---- Entra interactive + PKCE S256 (RFC 7636 vector) ----
   const OAUTH = {
     client_id: 'pub-xid', redirect_uri: 'http://localhost:5173/cb', response_type: 'code',
     scope: 'openid profile email', state: 's1', nonce: 'n1',
@@ -162,7 +163,7 @@ try {
   })
   check('refresh reuse 400', r.status === 400, r.text.slice(0, 80))
 
-  // ---- B2B client_credentials (ambas fachadas) ----
+  // ---- B2B client_credentials (both facades) ----
   r = await call('POST', '/xid/oauth2/v2.0/token', {
     form: { grant_type: 'client_credentials', client_id: 'svc-demo', client_secret: 'dev-secret-change-me' },
   })
@@ -182,7 +183,7 @@ try {
   })
   check('entra scope exceeds 400', r.status === 400 && r.json?.error === 'invalid_scope', r.text.slice(0, 80))
 
-  // ---- files con tokens máquina ----
+  // ---- files with machine tokens ----
   r = await call('GET', '/v1/files', { query: '?path=docs/secret.md', headers: { Authorization: `Bearer ${m2m}` } })
   check('files entra-m2m 200', r.status === 200 && r.text.includes('Secreto'), `${r.status} ${r.text.slice(0, 60)}`)
   r = await call('GET', '/v1/files', { query: '?path=docs/secret.md', headers: { Authorization: `Bearer ${m2mCog}` } })
@@ -195,6 +196,92 @@ try {
 } finally {
   fs.rmSync(tmpRoot, { recursive: true, force: true })
 }
+
+// ---- DynamoDB adapter (same duck-typed interface as the Cloudflare KV) ----
+const { DynamoKV, createDynamoBindings } = await import('../src/dynamo.js')
+const { beginLogin } = await import('../src/loginflow.js')
+const { parseTxt } = await import('../src/users.js')
+
+function fakeDynamoClient() {
+  const tables = new Map()
+  return {
+    tables,
+    async send(cmd) {
+      const i = cmd.input
+      const name = cmd.constructor.name
+      const table = () => {
+        if (!tables.has(i.TableName)) tables.set(i.TableName, new Map())
+        return tables.get(i.TableName)
+      }
+      if (name === 'GetItemCommand') return { Item: table().get(i.Key.pk.S) }
+      if (name === 'PutItemCommand') {
+        table().set(i.Item.pk.S, i.Item)
+        return {}
+      }
+      if (name === 'DeleteItemCommand') {
+        table().delete(i.Key.pk.S)
+        return {}
+      }
+      throw new Error(`fake dynamo: unsupported command ${name}`)
+    },
+  }
+}
+
+const fake = fakeDynamoClient()
+const dkv = new DynamoKV({ client: fake, tableName: 'xmeta' })
+await dkv.put('k1', '{"x":1}', { expirationTtl: 300 })
+check('dynamo get string', (await dkv.get('k1')) === '{"x":1}')
+check('dynamo get json', (await dkv.get('k1', 'json'))?.x === 1)
+fake.tables.get('xmeta').get('k1').ttl = { N: String(Math.floor(Date.now() / 1000) - 1) }
+check('dynamo ttl expired → null', (await dkv.get('k1')) === null)
+await new Promise((res) => setTimeout(res, 0))
+check('dynamo ttl expired → delete', !fake.tables.get('xmeta').has('k1'))
+await dkv.put('k2', 'v2')
+await dkv.delete('k2')
+check('dynamo delete', (await dkv.get('k2')) === null)
+
+// ---- e2e login with DynamoDB bindings (fake client, no AWS) ----
+const dyn = createDynamoBindings({}, { client: fakeDynamoClient() })
+const usersMap = await parseTxt(fs.readFileSync(path.join(import.meta.dir, '..', 'xusers.txt'), 'utf-8'))
+for (const u of usersMap.values()) {
+  const value = { email: u.email }
+  if (u.passwordHash) value.passwordHash = u.passwordHash
+  if (u.otpKeyHash) value.otpKeyHash = u.otpKeyHash
+  await dyn.XID_USERS.put(u.email, JSON.stringify(value))
+}
+const envDyn = { ...env, XID_META: dyn.XID_META, XID_USERS: dyn.XID_USERS, XID_CLIENTS: dyn.XID_CLIENTS }
+const dynFetch = (p, body) =>
+  app.fetch(
+    new Request(ORIGIN + p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+    envDyn,
+    {}
+  )
+let dr = await dynFetch('/auth/otp/start', { email: 'bob@example.com', password: 'abc123' })
+let dj = await dr.json()
+check(
+  'dynamo start password',
+  dr.status === 200 && !!dj?.Session && dj?.ChallengeParameters?.PASSWORD_ENABLED === 'true',
+  `${dr.status} ${JSON.stringify(dj).slice(0, 80)}`
+)
+dr = await dynFetch('/auth/otp/verify', { session: dj.Session, email: 'bob@example.com', password: 'abc123' })
+dj = await dr.json()
+check(
+  'dynamo password login',
+  dr.status === 200 && !!dj?.AuthenticationResult?.AccessToken && !!dj?.AuthenticationResult?.RefreshToken,
+  `${dr.status} ${JSON.stringify(dj).slice(0, 80)}`
+)
+dr = await dynFetch('/auth/otp/start', { email: 'bob@example.com', password: 'mala' })
+dj = await dr.json()
+dr = await dynFetch('/auth/otp/verify', { session: dj.Session, email: 'bob@example.com', password: 'mala' })
+check('dynamo wrong password 400', dr.status === 400, String(dr.status))
+
+// ---- no mail transport (e.g. Lambda without SES): clear 400, not 500 ----
+const mu = await beginLogin({ ...env, XID_ENV: 'production' }, 'alice@example.com', { passwordRequested: false })
+check(
+  'mail unavailable → reason',
+  mu.ok === false && mu.reason === 'mail_unavailable' && mu.passwordEnabled === false,
+  JSON.stringify(mu)
+)
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

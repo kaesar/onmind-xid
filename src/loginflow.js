@@ -1,25 +1,27 @@
-// Flujo de login compartido por las fachadas Cognito y Entra.
-// Orquestación común (lookup → sesión OTP → rama password/legacy/OTP+mail,
-// verificación de sesión + password/código). Cada fachada mapea los `reason`
-// a su propio formato (JSON Cognito vs formularios HTML Entra).
+// Login flow shared by the Cognito and Entra facades.
+// Common orchestration (lookup → OTP session → password/legacy/OTP+mail branch,
+// session + password/code verification). Each facade maps the `reason`s to its
+// own format (Cognito JSON vs Entra HTML forms).
 //
 // beginLogin passwordRequested:
-//   true      → solo password, sin mail (error password_disabled si no hay hash)
-//   false     → OTP con mail, salvo legacy (key estático, sin mail)
+//   true      → password only, no mail (password_disabled error if no hash)
+//   false     → OTP with mail, unless legacy (static key, no mail)
 //   undefined → auto: password si hay hash, legacy si hay key, OTP resto
-// Nota: legacy + passwordRequested=false no envía mail (la key estática basta).
+// Note: legacy + passwordRequested=false sends no mail (the static key is enough).
+// If mail sending fails (no SES/SMTP in prod, e.g. Lambda) →
+// reason 'mail_unavailable' with passwordEnabled (whether the user has a hash).
 
 import { getUser } from './users.js'
 import { issueOtpSession, verifyOtpSession } from './session.js'
-import { startOtp, verifyOtp, otpAttemptsLeft } from './otp.js'
+import { startOtp, verifyOtp, otpAttemptsLeft, clearOtp } from './otp.js'
 import { verifyPassword, checkPasswordRateLimit } from './passwords.js'
 import { sendMail, makeOtpMessage } from './mail.js'
 import { normalizeEmail, sleep } from './util.js'
 
 const hasSecret = (v) => v !== undefined && v !== null && v !== ''
 
-// Paso 1: resuelve usuario, emite otp_session y (solo en modo otp) genera y
-// envía el código por mail. Nunca envía mail en modo password o legacy.
+// Step 1: resolve user, issue otp_session and (only in otp mode) generate and
+// send the code by mail. Never sends mail in password or legacy mode.
 export async function beginLogin(env, rawEmail, { passwordRequested, lang = 'en' } = {}) {
   const email = normalizeEmail(rawEmail)
   if (!email) return { ok: false, reason: 'invalid_email' }
@@ -42,11 +44,16 @@ export async function beginLogin(env, rawEmail, { passwordRequested, lang = 'en'
   if (legacy) return { ok: true, email, user, session, mode: 'legacy' }
   const { code } = await startOtp(env, email)
   const msg = makeOtpMessage(code, email, lang)
-  await sendMail(env, { to: email, subject: msg.subject, text: msg.text, code: msg.code })
+  try {
+    await sendMail(env, { to: email, subject: msg.subject, text: msg.text, code: msg.code })
+  } catch {
+    await clearOtp(env, email)
+    return { ok: false, reason: 'mail_unavailable', email, passwordEnabled: !!user.passwordHash }
+  }
   return { ok: true, email, user, session, mode: 'otp' }
 }
 
-// Paso 2: verifica la sesión y el password (bcrypt) o el código OTP.
+// Step 2: verify the session and the password (bcrypt) or the OTP code.
 export async function finishLogin(env, { email, session, code = '', password = '' } = {}) {
   const emailN = normalizeEmail(email)
   const user = await getUser(env, emailN)

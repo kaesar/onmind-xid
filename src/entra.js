@@ -1,7 +1,7 @@
-// Fachada de simulación Microsoft Entra ID (OAuth2 v2.0 + OIDC) sobre el core XID.
-// Alternativa a cognito.js para el mismo escenario: OTP por email contra allowlist.
-// Orquestación del login en loginflow.js (compartida con Cognito); aquí solo
-// render de formularios HTML y emisión de auth codes/tokens.
+// Microsoft Entra ID simulation facade (OAuth2 v2.0 + OIDC) over the XID core.
+// Alternative to cognito.js for the same scenario: email OTP against the allowlist.
+// Login orchestration lives in loginflow.js (shared with Cognito); here only
+// HTML form rendering and auth code/token issuance.
 // Reutiliza: loginflow (pasos begin/finish), users, session, kv, entra-keys.
 //
 // Endpoints (tenant = path param; 'common'/'organizations'/'consumers' → tid configurado):
@@ -14,10 +14,10 @@
 //   GET  /{tenant}/oauth2/v2.0/logout
 //
 // Desviaciones documentadas vs Entra real:
-//   - sub = email (estable); además oid = sha256(email), tid, preferred_username.
-//   - interactivo = clientes públicos (sin secret); B2B = client_credentials con
-//     secret (registro xclients.txt / KV XID_CLIENTS, sub = client_id, sin id_token).
-//   - PKCE S256 opcional pero verificado cuando el authorize lo envió.
+//   - sub = email (stable); plus oid = sha256(email), tid, preferred_username.
+//   - interactive = public clients (no secret); B2B = client_credentials with
+//     secret (registry xclients.txt / KV XID_CLIENTS, sub = client_id, no id_token).
+//   - PKCE S256 optional but verified when the authorize request sent it.
 //   - Sin SAML/WS-Fed ni device_code.
 
 import { kvGet, kvPut, kvDelete } from './kv.js'
@@ -38,9 +38,9 @@ import {
   issueMachineToken,
 } from './clients.js'
 
-const AUTH_CODE_TTL = 600 // s (10 min, un solo uso)
-const REFRESH_TTL = 86400 // s (24 h, rotación en cada uso)
-const ACCESS_TTL = 3600 // s (1 h, igual que Cognito)
+const AUTH_CODE_TTL = 600 // s (10 min, single use)
+const REFRESH_TTL = 86400 // s (24 h, rotated on every use)
+const ACCESS_TTL = 3600 // s (1 h, same as Cognito)
 
 const codeKey = (code) => `entra-code:${code}`
 const refreshKey = (token) => `entra-refresh:${token}`
@@ -130,7 +130,7 @@ async function readBodyParams(c) {
   if (ct.includes('application/json')) {
     return c.req.json().catch(() => ({}))
   }
-  // form-urlencoded y multipart (Hono parseBody cubre ambos en Bun y Workers)
+  // form-urlencoded and multipart (Hono parseBody covers both on Bun and Workers)
   try {
     const parsed = await c.req.parseBody()
     const out = {}
@@ -196,7 +196,7 @@ function discoveryDoc(origin, tenant) {
   }
 }
 
-// ---------------- HTML UI (English, Español) ---------------------
+// ---------------- HTML UI (English, Spanish) ---------------------
 // `ui_locales` OIDC param → `Accept-Language` header → default `en`
 
 const STRINGS = {
@@ -231,6 +231,7 @@ const STRINGS = {
     use_code_link: 'Use email code instead',
     use_password_link: 'Use password instead',
     err_invalid_password: 'Invalid password.',
+    err_mail_unavailable: 'Email delivery not configured; password login required.',
   },
   es: {
     sign_in: 'Iniciar sesión',
@@ -263,6 +264,7 @@ const STRINGS = {
     use_code_link: 'Usar código por email',
     use_password_link: 'Usar contraseña',
     err_invalid_password: 'Contraseña inválida.',
+    err_mail_unavailable: 'Envío de email no configurado; se requiere contraseña.',
   },
 }
 
@@ -286,10 +288,10 @@ function cuiScript() {
   return `<script type="module" src="${esc(cuiUrl())}"></script>`
 }
 
-// Puente mínimo CUI ↔ formulario nativo:
-// - `as-input` no es form-associated: al enviar se copian sus valores a hidden.
-// - `as-button` emite `button-tap`: dispara el submit del formulario.
-// - Fallback: si el bundle CUI no carga, se sustituyen por input/button nativos.
+// Minimal CUI ↔ native form bridge:
+// - `as-input` is not form-associated: on submit its values are copied to hidden.
+// - `as-button` emits `button-tap`: triggers the form submit.
+// - Fallback: if the CUI bundle fails to load, native input/button replace them.
 const CUI_BRIDGE = `<script>
 (function(){
   function ensureHidden(form, name, value) {
@@ -366,8 +368,8 @@ function emailForm(oauth, { errorKey = '', email = '', env = {}, lang = 'en' } =
   )
 }
 
-// Sin input de email redundante: el email viaja en hidden (prefijado por el
-// servidor) y se muestra como texto ("Código enviado a …" / "Code sent to …").
+// No redundant email input: the email travels in a hidden field (server-set)
+// and is shown as text ("Code sent to …").
 function codeForm(oauth, { errorKey = '', email = '', otpSession = '', sentTo = '', switchUrl = '', env = {}, lang = 'en' } = {}) {
   return pageShell(
     t(lang, 'verify_code'),
@@ -385,8 +387,8 @@ function codeForm(oauth, { errorKey = '', email = '', otpSession = '', sentTo = 
   )
 }
 
-// Login con password real (bcrypt). Alternativa al OTP; el link cambia a OTP
-// (fallback ante olvido) sin perder los parámetros OAuth.
+// Real password (bcrypt) login. Alternative to OTP; the link switches to OTP
+// (fallback when forgotten) without losing the OAuth parameters.
 function passwordForm(oauth, { errorKey = '', email = '', otpSession = '', switchUrl = '', env = {}, lang = 'en' } = {}) {
   return pageShell(
     t(lang, 'sign_in'),
@@ -419,7 +421,7 @@ function oauthPassthrough(query) {
   }
 }
 
-// URL del propio authorize para los links de cambio password ⇄ OTP.
+// URL of the authorize request itself for the password ⇄ OTP switch links.
 function authorizeUrl(origin, tenant, oauth, overrides = {}) {
   const u = new URL(`${origin}/${tenant}/oauth2/v2.0/authorize`)
   const params = { ...oauth, ...overrides }
@@ -484,13 +486,16 @@ export async function handleAuthorizePost(c, tenantRaw) {
 
   if (!isValidEmail(email)) return c.html(emailForm(oauth, { errorKey: 'err_invalid_email', email, env, lang }), 400)
 
-  // Paso 1: solo email → beginLogin decide modo (password sin mail, OTP con
-  // mail, legado sin mail). ?mode=password fuerza password; ?mode=otp fuerza
-  // OTP (para legado ya no envía correo: la key estática basta).
+  // Step 1: email only → beginLogin picks the mode (password without mail,
+  // OTP with mail, legacy without mail). ?mode=password forces password;
+  // ?mode=otp forces OTP (legacy sends no mail: the static key is enough).
   if (!code && !password) {
     const requested = oauth.mode === 'password' ? true : oauth.mode === 'otp' ? false : undefined
     const started = await beginLogin(env, email, { passwordRequested: requested, lang })
     if (!started.ok) {
+      if (started.reason === 'mail_unavailable') {
+        return c.html(emailForm(oauth, { errorKey: 'err_mail_unavailable', email, env, lang }), 400)
+      }
       return c.html(emailForm(oauth, { errorKey: 'err_not_allowlisted', email, env, lang }), 403)
     }
     if (started.mode === 'password') {
@@ -518,7 +523,7 @@ export async function handleAuthorizePost(c, tenantRaw) {
     )
   }
 
-  // Paso 2: verifica password (bcrypt) o código → emite authorization code.
+  // Step 2: verify password (bcrypt) or code → issue the authorization code.
   const done = await finishLogin(env, { email, session: otpSession, code, password })
   if (!done.ok) {
     const user = done.user || null
@@ -628,7 +633,7 @@ export async function handleToken(c, tenantRaw) {
     }
     const user = await getUser(env, stored.email)
     if (!user) return c.json({ error: 'invalid_grant', error_description: 'user no longer authorized' }, 400)
-    await kvDelete(env, refreshKey(body.refresh_token)) // rotación
+    await kvDelete(env, refreshKey(body.refresh_token)) // rotation
     const origin = originOf(c.req.raw)
     const set = await issueEntraTokenSet(env, {
       email: stored.email,
@@ -649,7 +654,7 @@ export async function handleToken(c, tenantRaw) {
   }
 
   if (grant === 'client_credentials') {
-    // B2B máquina-a-máquina: sin usuario, sin OTP. Auth por Basic o body.
+    // B2B machine-to-machine: no user, no OTP. Auth via Basic or body.
     const basic = parseBasicAuth(c.req.raw)
     const clientId = body.client_id || basic?.clientId || ''
     const clientSecret = body.client_secret || basic?.clientSecret || ''
@@ -688,10 +693,10 @@ async function bearerPayload(env, request) {
   const token = m[1]
   const rs = await verifyRs256(env, token)
   if (rs) {
-    if (rs.jti && (await kvGet(env, `sess:${rs.jti}`))) return null // revocado vía logout
+    if (rs.jti && (await kvGet(env, `sess:${rs.jti}`))) return null // revoked via logout
     return rs
   }
-  return verifyAccessToken(env, token) // compat: acepta también HS256 de Cognito
+  return verifyAccessToken(env, token) // compat: also accepts Cognito HS256
 }
 
 export async function handleUserinfo(c) {
