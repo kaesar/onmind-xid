@@ -1,7 +1,9 @@
-// Transportes de mail:
-//  1. Cloudflare Email Service  → binding send_email `env.MAIL.send(...)`
-//  2. SMTP (Mailpit en dev)     → host/puerto por env, default 127.0.0.1:1025
-//  3. Consola (fallback)        → solo si XID_ENV=dev
+// Mail transports (first available wins):
+//  1. Cloudflare Email Service → send_email binding `env.MAIL.send(...)`
+//  2. XIN over HTTP            → POST {XID_XIN_URL}/send (OnMind-XIN; the only
+//                                option that works on Lambda, no SMTP needed)
+//  3. SMTP (XIN in dev)        → host/port from env, default 127.0.0.1:1025
+//  4. Console (fallback)       → only when XID_ENV=dev
 
 export async function sendMail(env, { to, from, subject, text, code }) {
   const envResolved = env || {}
@@ -14,6 +16,25 @@ export async function sendMail(env, { to, from, subject, text, code }) {
 
   const host = envResolved.XID_SMTP_HOST || process.env.XID_SMTP_HOST || '127.0.0.1'
   const port = Number(envResolved.XID_SMTP_PORT || process.env.XID_SMTP_PORT || 1025)
+  const xinBase = String(
+    envResolved.XID_XIN_URL || process.env.XID_XIN_URL || ''
+  ).replace(/\/+$/, '')
+  if (xinBase) {
+    try {
+      const messageId = await xinSend({
+        base: xinBase,
+        apiKey: envResolved.XID_XIN_API_KEY || process.env.XID_XIN_API_KEY || '',
+        from: fromAddr,
+        to,
+        subject,
+        text,
+      })
+      return { via: 'xin', base: xinBase, messageId }
+    } catch (err) {
+      if (envResolved.XID_ENV === 'production') throw err
+      // dev: fall through to SMTP, then console
+    }
+  }
   if (process.env.XID_SMTP_DISABLED !== '1') {
     try {
       const smtp = await import('node:net')
@@ -21,7 +42,7 @@ export async function sendMail(env, { to, from, subject, text, code }) {
       return { via: 'smtp', host, port }
     } catch (err) {
       if (envResolved.XID_ENV === 'production') throw err
-      // dev: cae al fallback consola
+      // dev: fall through to the console fallback
     }
   }
 
@@ -31,6 +52,24 @@ export async function sendMail(env, { to, from, subject, text, code }) {
   const codeLine = code ? `   OTP-Code: ${code}` : ''
   console.log(`[xid:mail:console] to=${to}\n${codeLine}\n${text}`)
   return { via: 'console' }
+}
+
+// POSTs the message to OnMind-XIN (`POST {base}/send`, friendly REST).
+// Contract: JSON {to, from, subject, text}; optional `x-api-key` header when
+// XIN requires one; 200 → {messageId}. Throws on network or non-2xx errors.
+export async function xinSend({ base, apiKey = '', from, to, subject, text }) {
+  const res = await fetch(`${base}/send`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      ...(apiKey ? { 'x-api-key': apiKey } : {}),
+    },
+    body: JSON.stringify({ to, from, subject, text }),
+    signal: AbortSignal.timeout(10000),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(`xin ${res.status} ${data.message || ''}`.trim())
+  return data.messageId || null
 }
 
 export function makeOtpMessage(code, email, lang = 'en') {

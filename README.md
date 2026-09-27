@@ -4,7 +4,7 @@
 
 This is an **IdP/IAM** for [**OnMind-PUB**](https://github.com/kaesar/onmind-pub). Thinked as worker (in **Hono**) with a **Cognito-compatible API** (subset, even **Entra ID compatible**) for **email OTP** authentication against an **allowlist**, plus an authenticated **file manager** for `hide: 2` articles. Besides could be used with WebApps, AI and machine to machine (M2M/B2B) for API's.
 
-- Runs locally with **Bun** (to test use **Mailpit** for SMTP).
+- Runs locally with **Bun** (for mail in dev use **[OnMind-XIN](https://github.com/kaesar/onmind-xin)**, sibling `../xin`, over SMTP).
 - Deploys as a **Cloudflare Worker** (and **Cloudflare Email Service** via the `send_email` binding).
 - Deploys to **AWS Lambda** (Node.js ≥ 20) with **DynamoDB** as an alternative runtime
   (Function URL or API Gateway; OTP mail not configured yet → password-only).
@@ -13,9 +13,9 @@ Same Hono core everywhere; only the entrypoint and the bindings differ:
 
 | Runtime | Entrypoint | Storage bindings | Mail |
 | --- | --- | --- | --- |
-| Local / container (Bun) | `src/dev.js` → `Bun.serve` | none → txt (`xusers.txt`/`xclients.txt`) + in-memory `Map` + FS | SMTP (Mailpit) / console in dev |
+| Local / container (Bun) | `src/dev.js` → `Bun.serve` | none → txt (`xusers.txt`/`xclients.txt`) + in-memory `Map` + FS | SMTP (XIN :1025) or XIN HTTP (`XID_XIN_URL`) / console in dev |
 | Cloudflare Worker | `src/index.js` → `export default { fetch }` (`wrangler deploy`) | KV `XID_META`/`XID_USERS`/`XID_CLIENTS`/`XID_FILES` | Cloudflare Email Service (`send_email`) |
-| AWS Lambda | `src/lambda.js` → `src/lambda.handler` (Function URL / API GW v2) | DynamoDB `xmeta`/`xusers`/`xclients` (`XID_*_TABLE`, `XID_DYNAMO_ENDPOINT` for LocalStack/dynamodb-local) | none yet → password login only |
+| AWS Lambda | `src/lambda.js` → `src/lambda.handler` (Function URL / API GW v2) | DynamoDB `xmeta`/`xusers`/`xclients` (`XID_*_TABLE`, `XID_DYNAMO_ENDPOINT` for LocalStack/dynamodb-local) | XIN HTTP (`XID_XIN_URL`) · else password login only |
 
 ---
 
@@ -40,7 +40,7 @@ Same Hono core everywhere; only the entrypoint and the bindings differ:
 | 4 | **HMAC JWT (`XID_JWT_SECRET`) + RefreshToken opaco** | Access + Id (~1 h). Claims `sub` = email, `token_use` = `access` \| `id`. Refresh opaco (256 bits, 30 d deslizantes, un solo uso con rotación); `GlobalSignOut` revoca access (`jti` denylist) y todos los refresh del usuario. |
 | 5 | **Dual session channel** | Pages and the Worker don't share cookies. Vue stores the session in `sessionStorage.xidCurrentSession`. The file API uses `Authorization: Bearer` + an HttpOnly `xid_session` cookie on the Worker. |
 | 6 | **Static `email:key` for local only** | Hashed (SHA-256) on load; never logged. In prod `otpKeyHash` is optional and is **not** uploaded from dev. |
-| 7 | **Mail: Cloudflare Email Service in prod; Mailpit SMTP locally** | Native `send_email` binding on the Worker; SMTP to Mailpit (`localhost:1025`) in `bun run dev`. Fallback: stdout if `XID_ENV=dev`. |
+| 7 | **Mail: Cloudflare Email Service in prod; OnMind-XIN locally and on Lambda** | Native `send_email` binding on the Worker; SMTP to XIN (`localhost:1025`) — or HTTP via `XID_XIN_URL` (`POST /send`, the Lambda path) — in dev. Fallback: stdout if `XID_ENV=dev`. |
 | 8 | **Files: local FS + `XID_FILES` KV on the Worker; R2 later** | One KV is enough for a few `hide: 2` markdown files. |
 | 9 | **`xid/` as a sibling package of `rag/`, not inside the VitePress theme** | Different runtime (Worker vs SSG); its own wrangler. |
 | 10 | **Hono `export default { fetch }`** | A single entrypoint for `bun --hot`, `wrangler dev`, and deploy. |
@@ -70,7 +70,7 @@ flowchart LR
     KVO["KV otp: / sess:"]
     KVF[KV XID_FILES]
   end
-  Mail["CF Email Service | Mailpit SMTP | console"]
+  Mail["CF Email Service | XIN SMTP | console"]
   Site --> AsAccess
   Access -->|POST /auth/otp/*| Hono
   AsAccess -->|Bearer JWT GET /v1/files| Hono
@@ -96,7 +96,7 @@ sequenceDiagram
   participant U as User
   participant A as /access Vue
   participant W as xid Worker
-  participant M as Mail (CF Email / Mailpit / console)
+  participant M as Mail (CF Email / XIN / console)
   U->>A: email
   A->>W: POST /auth/otp/start
   W->>W: allowlist?
@@ -123,7 +123,7 @@ sequenceDiagram
 | Users | `xusers.txt` (FS) | KV `XID_USERS` |
 | OTP / rate limit | In-memory `Map` **or** the same KV under `wrangler dev` | KV prefix `otp:`, `rl:` |
 | Files | `XID_FILES_ROOT` (default `xid/files`) | KV `XID_FILES` (key = path) |
-| Mail | Mailpit SMTP `XID_SMTP_HOST:XID_SMTP_PORT` (default `127.0.0.1:1025`, UI `:8025`); stdout fallback if `XID_ENV=dev` | `send_email` binding with Cloudflare Email Service (`env.MAIL.send()`); `wrangler dev` simulates it |
+| Mail | Send via XIN: SMTP `XID_SMTP_HOST:XID_SMTP_PORT` (default `127.0.0.1:1025`) or HTTP `XID_XIN_URL` (`POST /send`, required on Lambda); read the OTP via the XIN HTTP API (`GET :8788/messages` — run XIN with `PORT=8788` so it doesn't clash with XID's `:8787`); stdout fallback if `XID_ENV=dev` | `send_email` binding with Cloudflare Email Service (`env.MAIL.send()`); `wrangler dev` simulates it |
 | Bindings | `.env` / `xid/.dev.vars` env | `wrangler.toml` + secrets |
 
 > Detection: if the `env.XID_USERS` binding (KV) exists uses KV adapter, otherwise uses txt.
@@ -152,7 +152,7 @@ flowchart TD
 
 - [Bun](https://bun.sh/) ≥ 1.3
 - [Cloudflare Wrangler](https://developers.cloudflare.com/workers/wrangler/) (for `wrangler dev` / deploy)
-- [Mailpit](https://mailpit.axllent.org/docs/) via Docker (SMTP `:1025`, UI `:8025`) — recommended for dev
+- [OnMind-XIN](https://github.com/kaesar/onmind-xin) (sibling `../xin`): from there `PORT=8788 bun run dev` (SMTP `:1025`, HTTP API `:8788`) — recommended for dev
 
 ```bash
 bun install          # installs dependencies (hono)
@@ -189,17 +189,17 @@ carol@example.com:staticdev                         # legacy static dev key (SHA
 
 ## Testing the OTP flow
 
-1. Start Mailpit (if not running): `axllent/mailpit` container (SMTP `:1025`, UI `http://localhost:8025`).
+1. Start XIN (if not running): from `../xin`, `PORT=8788 bun run dev` (SMTP `:1025`, API `http://localhost:8788`).
 2. Start the service: `bun run dev` (or `bun run start`).
 3. `curl`:
 
 ```bash
-# 1) start - returns Session (and Mailpit receives the OTP)
+# 1) start - returns Session (and XIN stores the OTP)
 curl -s -X POST http://localhost:8787/auth/otp/start -H 'Content-Type: application/json' \
   -d '{"email":"alice@example.com"}'
 
-# 2) Check the code in the Mailpit UI (http://localhost:8025) or API:
-curl -s http://localhost:8025/api/v1/messages
+# 2) Read the code from XIN (the OTP is in `text`):
+curl -s 'http://localhost:8788/messages?limit=1'
 
 # 3) verify - AccessToken/IdToken
 curl -s -X POST http://localhost:8787/auth/otp/verify -H 'Content-Type: application/json' \
@@ -374,7 +374,9 @@ except `--gen`/OTP-only defaults. For prod, run the bootstrap scripts after
 | `PORT` | local port (default `8787`) |
 | `XID_JWT_SECRET` | ≥ 32 bytes, if missing in dev an ephemeral one is generated, else: `export XID_JWT_SECRET=$(openssl rand -hex 32)` |
 | `XID_MAIL_FROM` | sender (e.g. `noreply@mx.tudominio.com`) |
-| `XID_SMTP_HOST` / `XID_SMTP_PORT` | dev SMTP (default `127.0.0.1:1025` for Mailpit) |
+| `XID_SMTP_HOST` / `XID_SMTP_PORT` | dev SMTP (default `127.0.0.1:1025` for XIN; skip with `XID_SMTP_DISABLED=1`) |
+| `XID_XIN_URL` | XIN base URL (e.g. `http://localhost:8788`) → OTP mail via `POST /send`; the only mail transport that works on Lambda |
+| `XID_XIN_API_KEY` | optional `x-api-key` sent to XIN (when XIN has `XIN_API_KEY` set) |
 | `XID_CORS_ORIGINS` | comma-separated CORS allowlist |
 | `XID_CLIENT_ID` | opaque string (default `pub-xid`) |
 | `XID_USERS_TXT` | alternative path to `xusers.txt` |
@@ -425,7 +427,7 @@ printf 'svc-billing:$(openssl rand -base64 32):files.read\n' > /srv/xid/xclients
 docker run -d --name xid -p 8787:8787 \
   -v /srv/xid:/data \
   -e XID_JWT_SECRET=$(openssl rand -hex 32) \
-  -e XID_SMTP_HOST=mailpit -e XID_SMTP_PORT=1025 \
+  -e XID_SMTP_HOST=xin -e XID_SMTP_PORT=1025 \
   -e XID_MAIL_FROM=noreply@example.com \
   -e XID_CORS_ORIGINS=https://tu-sitio.com \
   -e XID_REDIRECT_ALLOWLIST=https://tu-sitio.com/callback \
@@ -443,14 +445,19 @@ services:
     volumes: ["/srv/xid:/data"]
     environment:
       XID_JWT_SECRET: ${XID_JWT_SECRET:?required}
-      XID_SMTP_HOST: mailpit
+      XID_SMTP_HOST: xin
       XID_MAIL_FROM: noreply@example.com
       XID_CORS_ORIGINS: https://tu-sitio.com
+  xin:
+    image: onmind-xin   # build it from ../xin: docker build -t onmind-xin ../xin
+    ports: ["1025:1025", "8788:8787"]
+    volumes: ["/srv/xin:/data"]
 ```
 
 Notes: the image defaults to `XID_ENV=production` with FS paths under `/data`
-(override via env); with `production` OTP email requires a reachable SMTP —
-static `email:key` users skip mail (dev only). Secrets via env/vault, never baked in.
+(override via env); with `production` OTP email requires a reachable SMTP
+(e.g. XIN, see the `xin` service above) — static `email:key` users skip mail
+(dev only). Secrets via env/vault, never baked in.
 
 ## AWS Lambda + DynamoDB (alternative to Cloudflare)
 
@@ -474,31 +481,46 @@ as the Cloudflare KV binding (`get`/`get|json`/`put{expirationTtl}`/`delete`), s
 `"type": "module"`). The app env = `process.env` + the three bindings;
 `XID_ENV` defaults to `production` on Lambda.
 
-**No SES for now → password login only.** There is no mail transport on
-Lambda, so passwordless (OTP) requests fail fast with
+**Mail on Lambda = XIN over HTTP.** There is no SMTP listener on Lambda, so set
+`XID_XIN_URL` to an [OnMind-XIN](https://github.com/kaesar/onmind-xin) base URL
+(local `http://<host>:8788`, or the deployed XIN HTTP API) plus optional
+`XID_XIN_API_KEY` — `sendMail` then delivers the OTP with `POST /send`
+(`{via:"xin", messageId}`). Transport order everywhere: Cloudflare `send_email`
+binding → XIN HTTP (if `XID_XIN_URL` is set) → SMTP (`XID_SMTP_HOST/PORT`,
+skippable with `XID_SMTP_DISABLED=1`) → console fallback in dev, throw in
+production. Without any transport, passwordless (OTP) requests fail fast with
 `400 Email delivery is not configured on this deployment; password login required.`
-Users in `xusers` need a bcrypt password (`email:$2b$…`). Enable `mode=otp`
-later by adding SES/SMTP — the code path is already there.
+Users in `xusers` with a bcrypt password (`email:$2b$…`) can always use password
+login instead.
 
 ```bash
 export AWS_REGION=eu-west-1 XID_JWT_SECRET=$(openssl rand -hex 32)
-bun run kv:dynamo --create          # tablas xusers / xclients / xmeta (TTL en xmeta)
-bun run kv:dynamo --apply           # xusers.txt + xclients.txt → tablas (hashes, nunca secretos)
-bun run kv:dynamo                   # dry-run: imprime las entradas sin escribir
+bun run kv:dynamo --create          # tables xusers / xclients / xmeta (TTL on xmeta)
+bun run kv:dynamo --apply           # xusers.txt + xclients.txt → tables (hashes, never secrets)
+bun run kv:dynamo                   # dry-run: print entries without writing
 ```
 
-Deploy notes (zip o imagen; el artefacto incluye `src/`, `vendor/` y `files/`):
+**Infrastructure as code:** the [`cdk/`](cdk/) folder contains an AWS CDK
+(JavaScript) app — Lambda + DynamoDB + HTTP API in front of apps & xid — plus
+[`cdk/ARCHITECTURE.md`](cdk/ARCHITECTURE.md) with the full architecture,
+production DynamoDB settings (retain / deletion protection / PITR) and how to
+test the whole stack locally against the [Floci](https://github.com/floci-io/floci)
+AWS simulator (port `4566`).
 
-- Runtime `nodejs20.x`, handler `src/lambda.handler`; dependencias instaladas
-  (`@aws-sdk/client-dynamodb` solo se usa aquí — no entra en el bundle del Worker).
-- Trigger: **Function URL** (auth NONE) o API Gateway HTTP API (payload v2) —
-  ambos los soporta `hono/aws-lambda`.
-- Secrets por env vars: `XID_JWT_SECRET`, `XID_REDIRECT_ALLOWLIST`,
-  `XID_CORS_ORIGINS`, `XID_RSA_PRIVATE_JWK` (si falta: par efímero dev).
-- Rate limit por IP usa `x-forwarded-for` (Function URL/API GW); en Cloudflare
-  sigue siendo `cf-connecting-ip`.
-- Files y assets de login se sirven del FS (`XID_FILES_ROOT`, `vendor/cui/`):
-  no hay binding `XID_FILES` en Lambda.
+Deploy notes (zip or image; the artifact includes `src/`, `vendor/` and, if you
+deliberately keep it, `files/`):
+
+- Runtime `nodejs22.x`, handler `src/lambda.handler`; dependencies installed
+  (`@aws-sdk/client-dynamodb` is Lambda-only — it never enters the Worker bundle).
+- Trigger: **Function URL** (auth NONE) or API Gateway HTTP API (payload v2) —
+  `hono/aws-lambda` supports both. The CDK stack uses an HTTP API
+  (`ANY /` + `ANY /{proxy+}`).
+- Secrets via env vars: `XID_JWT_SECRET`, `XID_REDIRECT_ALLOWLIST`,
+  `XID_CORS_ORIGINS`, `XID_RSA_PRIVATE_JWK` (ephemeral dev pair if missing).
+- IP rate limit uses `x-forwarded-for` (Function URL/API GW); on Cloudflare it
+  is still `cf-connecting-ip`.
+- Files and login assets are served from the FS (`XID_FILES_ROOT`,
+  `vendor/cui/`): there is no `XID_FILES` binding on Lambda.
 
 ## Storage: KV bindings (`XID_*`)
 
@@ -544,4 +566,4 @@ Considering the following:
 
 ## Status
 
-Implemented and verified locally (Bun + Mailpit): end-to-end OTP flow, JWT tokens, `/auth/me`, files (200/401/404/traversal 400), CORS, PUB build with `PUB_XID=1`. Reproducible smoke suite: `bun run smoke` (48 checks in-process, no ports). Deploy configuration still **pending** (Cloudflare Email, KV IDs, secrets).
+Implemented and verified locally (Bun + XIN): end-to-end OTP flow, JWT tokens, `/auth/me`, files (200/401/404/traversal 400), CORS, PUB build with `PUB_XID=1`. Reproducible smoke suite: `bun run smoke` (51 checks in-process, no ports). Deploy configuration still **pending** (Cloudflare Email, KV IDs, secrets).

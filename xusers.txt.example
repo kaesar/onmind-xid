@@ -1,7 +1,7 @@
 # xusers.txt — local allowlist (NOT versioned)
 #
 # Format:
-#   email                          → registered; OTP by mail (or Mailpit SMTP in dev)
+#   email                          → registered; OTP by mail (OnMind-XIN SMTP in dev)
 #   email:$2b$...                  → allowlist + real password (bcrypt, TinyAuth-compatible).
 #                                    Enables password login (Cognito PASSWORD / authorize
 #                                    mode=password) with email OTP kept as fallback.

@@ -15,7 +15,7 @@ const env = {
   XID_SMTP_DISABLED: '1',
   XID_JWT_SECRET: '0123456789abcdef0123456789abcdef',
 }
-process.env.XID_SMTP_DISABLED = '1' // mail.js reads process.env: deterministic even if Mailpit is running
+process.env.XID_SMTP_DISABLED = '1'  // mail.js reads process.env (deterministic), even if OnMind-XIN is running
 const ORIGIN = 'http://localhost:8787'
 const BASIC = (id, secret) => 'Basic ' + Buffer.from(`${id}:${secret}`).toString('base64')
 
@@ -282,6 +282,46 @@ check(
   mu.ok === false && mu.reason === 'mail_unavailable' && mu.passwordEnabled === false,
   JSON.stringify(mu)
 )
+
+// ---- mail via XIN over HTTP (XID_XIN_URL): stubbed fetch, no network ----
+const { sendMail, xinSend } = await import('../src/mail.js')
+const realFetch = globalThis.fetch
+let seen = null
+globalThis.fetch = async (url, opts) => {
+  seen = { url: String(url), opts }
+  return { ok: true, status: 200, json: async () => ({ messageId: 'xin-m1' }) }
+}
+const xid = await xinSend({ base: 'http://xin.local:8788', apiKey: 'k', from: 'n@x.io', to: 'a@x.io', subject: 's', text: 't' })
+check(
+  'xin send posts /send',
+  xid === 'xin-m1' &&
+    seen.url === 'http://xin.local:8788/send' &&
+    seen.opts.headers['x-api-key'] === 'k' &&
+    JSON.parse(seen.opts.body).to === 'a@x.io',
+  seen.url
+)
+const via = await sendMail(
+  { XID_ENV: 'dev', XID_XIN_URL: 'http://xin.local:8788/', XID_XIN_API_KEY: 'k' },
+  { to: 'a@x.io', subject: 's', text: 't' }
+)
+check(
+  'sendmail via xin (trailing slash stripped)',
+  via.via === 'xin' && via.messageId === 'xin-m1' && seen.url === 'http://xin.local:8788/send',
+  JSON.stringify(via)
+)
+globalThis.fetch = async () => {
+  throw new Error('xin down')
+}
+const _log = console.log
+console.log = () => {}
+let fb
+try {
+  fb = await sendMail({ XID_ENV: 'dev', XID_XIN_URL: 'http://xin.local:8788' }, { to: 'a@x.io', subject: 's', text: 't', code: '123456' })
+} finally {
+  console.log = _log
+}
+check('xin down → console fallback (dev)', fb?.via === 'console', JSON.stringify(fb))
+globalThis.fetch = realFetch
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

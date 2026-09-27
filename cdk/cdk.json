@@ -1,0 +1,18 @@
+{
+  "app": "node bin/app.js",
+  "context": {
+    "tablePrefix": "",
+    "xidEnv": "production",
+    "removalPolicy": "retain",
+    "deletionProtection": "true",
+    "pointInTimeRecovery": "true",
+    "terminationProtection": "false",
+    "corsOrigins": "",
+    "redirectAllowlist": "",
+    "tenantId": "",
+    "clientId": "",
+    "xinUrl": "",
+    "xinApiKey": "",
+    "localEndpoint": ""
+  }
+}
