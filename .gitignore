@@ -1,5 +1,4 @@
 node_modules/
-bun.lock
 xusers.txt
 xroles.txt
 xclients.txt

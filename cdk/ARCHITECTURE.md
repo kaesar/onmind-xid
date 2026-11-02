@@ -78,7 +78,8 @@ All config is **CDK context** (defaults in `cdk/cdk.json`, override with
 
 | Context              | Default        | Maps to / effect                                   |
 | -------------------- | -------------- | -------------------------------------------------- |
-| `jwtSecret`          | *(required)*   | `XID_JWT_SECRET` — prefer `export XID_JWT_SECRET=$(openssl rand -hex 32)` so the secret stays out of argv/history. ≥ 32 chars, enforced at synth |
+| `jwtSecret`          | *(required)*   | `XID_JWT_SECRET` — prefer `export XID_JWT_SECRET=$(openssl rand -hex 32)` so the secret stays out of argv/history. ≥ 32 chars, enforced at synth. Signs the OTP session only |
+| `rsaPrivateJwk`      | `""`           | `XID_RSA_PRIVATE_JWK` (JSON from `scripts/gen-rsa-jwk.js`) — signs access/id tokens (RS256) for both façades; prefer the env var. Without it each Lambda instance generates an ephemeral pair and tokens stop validating across cold starts |
 | `tablePrefix`        | `""`           | table names `{prefix}xusers/xclients/xmeta` (multi-env accounts) |
 | `xidEnv`             | `production`   | `XID_ENV` (`production` ⇒ Secure cookies, strict redirect checks) |
 | `removalPolicy`      | `retain`       | `retain` \| `destroy` — see “DynamoDB in production” |
@@ -94,8 +95,8 @@ All config is **CDK context** (defaults in `cdk/cdk.json`, override with
 
 Lambda environment (set by the stack): `XID_ENV`, `XID_JWT_SECRET`,
 `XID_USERS_TABLE`, `XID_CLIENTS_TABLE`, `XID_META_TABLE`, plus the optional
-list vars above — and `XID_XIN_URL` / `XID_XIN_API_KEY` when `xinUrl` /
-`xinApiKey` are given. Mail on Lambda goes through **XIN over HTTP**
+list vars above — `XID_RSA_PRIVATE_JWK` when `rsaPrivateJwk` is given, and
+`XID_XIN_URL` / `XID_XIN_API_KEY` when `xinUrl` / `xinApiKey` are given. Mail on Lambda goes through **XIN over HTTP**
 (`POST /send`, no SMTP needed); without `xinUrl`, passwordless OTP fails fast
 with `400 mail_unavailable` and login stays password-only (bcrypt in `xusers`).
 
@@ -143,6 +144,7 @@ Notes:
 # one-time
 export AWS_PROFILE=your-profile
 export XID_JWT_SECRET=$(openssl rand -hex 32)   # never commit this
+export XID_RSA_PRIVATE_JWK="$(bun scripts/gen-rsa-jwk.js)"  # RS256 signing key
 cd cdk && npm install
 npx cdk bootstrap                                # once per account/region
 
@@ -219,6 +221,10 @@ A second, lighter test path (no CDK): run only the storage layer against Floci �
   environment / CFN template (`cdk.out` is git-ignored). Rotate per deploy;
   move to **Secrets Manager** (`secretValueFromJson`) when hardening for
   long-lived prod.
+- `XID_RSA_PRIVATE_JWK` also lands in the Lambda environment. It must be fixed
+  for the life of the deployment: access/id tokens are RS256 and validated
+  against `/auth/.well-known/jwks.json`, so an ephemeral key per instance
+  invalidates tokens on every cold start.
 - Passwords are bcrypt hashes in `xusers` (`email:$2b$…`); B2B client secrets
   are hashed in `xclients`; OTP/session material lives only in `xmeta` with TTL.
 - CORS and redirect allowlists are enforced by the app (same behaviour on all

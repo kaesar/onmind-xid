@@ -5,6 +5,7 @@
 // Usage: bun scripts/smoke.js   (exit != 0 if anything fails)
 
 import { app } from '../src/index.js'
+import { signToken } from '../src/session.js'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -62,6 +63,13 @@ try {
   // ---- base smoke ----
   let r = await call('GET', '/health')
   check('health', r.status === 200 && r.json?.ok === true, r.text.slice(0, 80))
+  r = await call('GET', '/health', { headers: { Origin: 'http://localhost:5173' } })
+  check(
+    'cors allows credentials',
+    r.headers.get('access-control-allow-credentials') === 'true' &&
+      r.headers.get('access-control-allow-origin') === 'http://localhost:5173',
+    r.headers.get('access-control-allow-origin') || ''
+  )
 
   // ---- Cognito: real password (bob, bcrypt) ----
   r = await call('POST', '/auth/otp/start', { json: { email: 'bob@example.com' } })
@@ -91,6 +99,110 @@ try {
   check('cognito me denied after logout', r.status === 400, r.text.slice(0, 80))
   r = await call('GET', '/auth/me', { headers: { Authorization: `Bearer ${cognitoAT}` } })
   check('cognito me', r.status === 200 && r.json?.Username === 'bob@example.com', r.text.slice(0, 80))
+  const cHead = JSON.parse(Buffer.from(cognitoAT.split('.')[0], 'base64url').toString())
+  check('cognito access token is RS256', cHead.alg === 'RS256' && typeof cHead.kid === 'string', JSON.stringify(cHead))
+  r = await call('GET', '/auth/.well-known/jwks.json')
+  check(
+    'cognito jwks',
+    r.status === 200 && r.json?.keys?.[0]?.kid === cHead.kid && r.json?.keys?.[0]?.kty === 'RSA',
+    r.text.slice(0, 80)
+  )
+  const legacyAT = await signToken(
+    { sub: 'bob@example.com', token_use: 'access', exp: Math.floor(Date.now() / 1000) + 60 },
+    env.XID_JWT_SECRET
+  )
+  r = await call('GET', '/auth/me', { headers: { Authorization: `Bearer ${legacyAT}` } })
+  check('cognito accepts legacy HS256', r.status === 200, r.text.slice(0, 80))
+
+  // ---- Caddy forward auth (cookie or Bearer, Remote-* headers) ----
+  r = await call('GET', '/auth/forward')
+  check('forward auth without token 401', r.status === 401, r.text.slice(0, 80))
+  r = await call('GET', '/auth/forward', { headers: { Cookie: `xid_session=${cognitoAT}` } })
+  check(
+    'forward auth headers',
+    r.status === 200 &&
+      r.headers.get('remote-user') === 'bob@example.com' &&
+      r.headers.get('remote-email') === 'bob@example.com' &&
+      r.headers.get('remote-role') === 'admin' &&
+      r.headers.get('remote-groups') === 'admin',
+    r.text.slice(0, 80)
+  )
+  r = await call('GET', '/auth/forward', {
+    headers: { Accept: 'text/html', 'X-Forwarded-Uri': '/docs/secret?x=1' },
+    overrideEnv: { ...env, XID_LOGIN_URL: 'https://app.example.com/access' },
+  })
+  check(
+    'forward auth browser redirect',
+    r.status === 302 &&
+      r.headers.get('location') === 'https://app.example.com/access?next=%2Fdocs%2Fsecret%3Fx%3D1',
+    r.text.slice(0, 80)
+  )
+  const cookieEnv = { ...env, XID_COOKIE_DOMAIN: '.example.com' }
+  const cookieStart = await call('POST', '/auth/otp/start', {
+    json: { email: 'bob@example.com' },
+    overrideEnv: cookieEnv,
+  })
+  r = await call('POST', '/auth/otp/verify', {
+    json: { session: cookieStart.json?.Session, email: 'bob@example.com', password: 'abc123' },
+    overrideEnv: cookieEnv,
+  })
+  check(
+    'cookie parent domain',
+    (r.headers.get('set-cookie') || '').includes('Domain=.example.com'),
+    r.headers.get('set-cookie') || r.text.slice(0, 80)
+  )
+
+  // ---- HTML login page (generic, used by forward-auth) ----
+  const hidden = (html, name) =>
+    (html.match(new RegExp(`name="${name}" value="([^"]*)"`)) || [])[1] || ''
+  r = await call('GET', '/login')
+  check('login page', r.status === 200 && r.text.includes('name="email"'), r.text.slice(0, 80))
+  r = await call('POST', '/login', { form: { email: 'bob@example.com' } })
+  check('login password form', r.status === 200 && r.text.includes('name="password"'), r.text.slice(0, 80))
+  const loginOtp = hidden(r.text, 'otp_session')
+  r = await call('POST', '/login', {
+    form: { email: 'bob@example.com', password: 'abc123', otp_session: loginOtp, next: '/docs' },
+  })
+  const loginCookie = (r.headers.get('set-cookie') || '').split(';')[0]
+  check(
+    'login sets cookie and redirects',
+    r.status === 302 && r.headers.get('location') === '/docs' && loginCookie.startsWith('xid_session='),
+    `${r.status} ${r.headers.get('location')}`
+  )
+  r = await call('GET', '/login', { query: '?next=/docs', headers: { Cookie: loginCookie } })
+  check('login redirects when signed in', r.status === 302 && r.headers.get('location') === '/docs', r.text.slice(0, 80))
+  r = await call('POST', '/login', {
+    form: { email: 'bob@example.com' },
+    headers: { Origin: 'https://evil.example' },
+  })
+  check('login rejects cross-origin', r.status === 403, r.text.slice(0, 80))
+  r = await call('GET', '/login', { query: '?next=//evil.example' })
+  check('login next is relative', r.status === 200 && !r.text.includes('//evil.example'), r.text.slice(0, 80))
+  r = await call('POST', '/login', { form: { email: 'carol@example.com' } })
+  const carolOtp = hidden(r.text, 'otp_session')
+  check('login code form', r.status === 200 && r.text.includes('name="code"') && !!carolOtp, r.text.slice(0, 80))
+  r = await call('POST', '/login', {
+    form: { email: 'carol@example.com', code: 'staticdev', otp_session: carolOtp },
+  })
+  check(
+    'login legacy code',
+    r.status === 302 && (r.headers.get('set-cookie') || '').includes('xid_session='),
+    `${r.status} ${r.headers.get('location')}`
+  )
+  r = await call('GET', '/auth/forward', {
+    headers: {
+      Accept: 'text/html',
+      'X-Forwarded-Uri': '/docs',
+      'X-Forwarded-Host': 'app.example.com',
+      'X-Forwarded-Proto': 'https',
+    },
+  })
+  check(
+    'forward auth defaults to /login',
+    r.status === 302 && r.headers.get('location') === 'https://app.example.com/login?next=%2Fdocs',
+    r.text.slice(0, 80)
+  )
+
   r = await call('POST', '/cognito/RespondToAuthChallenge', {
     json: { Session: sess, ChallengeResponses: { USERNAME: 'bob@example.com', PASSWORD: 'wrong' } },
   })

@@ -13,6 +13,39 @@ export function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+// Only same-origin relative paths are valid in ?next= (no open redirects).
+// Reject backslashes and percent-encoded // or \ (browsers normalize them).
+export function safeNext(value) {
+  const s = String(value || '').trim()
+  if (!s.startsWith('/') || s.startsWith('//') || /[\\\r\n]/.test(s)) return ''
+  let decoded = s
+  try {
+    decoded = decodeURIComponent(s)
+  } catch {
+    return ''
+  }
+  if (!decoded.startsWith('/') || decoded.startsWith('//') || /[\\\r\n]/.test(decoded)) return ''
+  return s
+}
+
+// Form body parser shared by the HTML facades (urlencoded, multipart, JSON).
+export async function readBodyParams(c) {
+  const ct = c.req.header('content-type') || ''
+  if (ct.includes('application/json')) {
+    return c.req.json().catch(() => ({}))
+  }
+  try {
+    const parsed = await c.req.parseBody()
+    const out = {}
+    for (const [k, v] of Object.entries(parsed || {})) {
+      out[k] = typeof v === 'string' ? v : String(v)
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
 export function maskEmail(email) {
   const [local, domain] = email.split('@')
   if (!domain) return email

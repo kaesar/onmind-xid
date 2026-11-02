@@ -2,8 +2,11 @@ import { Hono } from 'hono'
 import { initiateAuth, respondToAuthChallenge, getUserOp, globalSignOut, signUpStub, oauthToken } from './cognito.js'
 import { getFileContent } from './files.js'
 import { getAsset } from './assets.js'
-import { registerEntra } from './entra.js'
+import { registerEntra, handleJwks } from './entra.js'
 import { registerAdmin } from './admin.js'
+import { handleForwardAuth } from './forwardauth.js'
+import { handleLoginGet, handleLoginPost } from './login.js'
+import { sessionCookie } from './cookies.js'
 
 const app = new Hono()
 
@@ -28,6 +31,7 @@ function corsHeaders(origin, env) {
     Vary: 'Origin',
     'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Amz-Target, x-api-key',
+    'Access-Control-Allow-Credentials': 'true',
     'Access-Control-Max-Age': '86400',
   }
 }
@@ -59,6 +63,9 @@ app.get('/', (c) => {
       'POST /auth/otp/start',
       'POST /auth/otp/verify',
       'POST /auth/refresh',
+      'GET /auth/.well-known/jwks.json',
+      'GET|POST /login (HTML login page)',
+      'GET /auth/forward (Caddy forward_auth)',
       'GET /auth/me',
       'POST /auth/logout',
       'GET /v1/files?path=',
@@ -96,13 +103,6 @@ const COGNITO_TARGETS = [
 ]
 const OP_INDEX = Object.fromEntries(COGNITO_TARGETS)
 
-function authCookie(result, env) {
-  const token = result?.AuthenticationResult?.AccessToken
-  if (!token) return null
-  const secure = (env.XID_ENV || process.env.XID_ENV) === 'production' ? '; Secure' : ''
-  return `xid_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=3600${secure}`
-}
-
 async function callAuth(c, fn) {
   const ct = c.req.header('content-type') || ''
   let body = {}
@@ -110,7 +110,7 @@ async function callAuth(c, fn) {
     body = await c.req.json().catch(() => ({}))
   }
   const result = await fn(c.env, ctxOf(c), body)
-  const cookie = authCookie(result, c.env || {})
+  const cookie = sessionCookie(result?.AuthenticationResult?.AccessToken, c.env || {})
   return sendResult(c, result, cookie)
 }
 
@@ -159,6 +159,16 @@ app.post('/auth/otp/verify', (c) =>
     })
   })
 )
+
+// JWKS de los access/id tokens RS256 (Cognito y Entra comparten clave).
+app.get('/auth/.well-known/jwks.json', (c) => handleJwks(c))
+
+// Página de login HTML (OTP / password) para navegadores y forward-auth.
+app.get('/login', handleLoginGet)
+app.post('/login', handleLoginPost)
+
+// Forward auth para proxies (Caddy `forward_auth`).
+app.get('/auth/forward', handleForwardAuth)
 
 app.get('/auth/me', (c) => callAuth(c, (env, ctx) => getUserOp(env, ctx, {})))
 

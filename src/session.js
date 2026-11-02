@@ -2,11 +2,12 @@ import { createRequire } from 'node:module'
 import { base64UrlDecode, base64urlEncode, constantTimeEqual } from './util.js'
 import { kvDelete, kvGet, kvPut } from './kv.js'
 import { getRole } from './users.js'
+import { signRs256, verifyRs256 } from './entra-keys.js'
 
 const require = createRequire(import.meta.url)
 
-// JWT HMAC-SHA256 sin librerías (crypto.subtle, funciona en Bun y Workers).
-// Tipos de token: access / id (usuario) y otp_session (challenge).
+// JWT sin librerías (crypto.subtle): access/id RS256 con JWKS, sesión OTP HMAC.
+// RS256 usa XID_RSA_PRIVATE_JWK; XID_JWT_SECRET solo firma la sesión OTP.
 
 const ISS = 'xid'
 const ACCESS_TTL = 3600 // s (~1 h)
@@ -84,40 +85,33 @@ function bytesEqual(a, b) {
 }
 
 export async function issueTokens(env, email, clientId) {
-  const secret = requireSecret(env)
   const now = Math.floor(Date.now() / 1000)
   const exp = now + ACCESS_TOKEN_TTL
   const jti = crypto.randomUUID()
   const role = await getRole(env, email)
-  const access = await signToken(
-    {
-      sub: email,
-      token_use: 'access',
-      role,
-      roles: [role],
-      iss: ISS,
-      aud: clientId,
-      iat: now,
-      exp,
-      jti,
-    },
-    secret
-  )
-  const id = await signToken(
-    {
-      sub: email,
-      token_use: 'id',
-      email,
-      email_verified: true,
-      role,
-      roles: [role],
-      iss: ISS,
-      aud: clientId,
-      iat: now,
-      exp,
-    },
-    secret
-  )
+  const access = await signRs256(env, {
+    sub: email,
+    token_use: 'access',
+    role,
+    roles: [role],
+    iss: ISS,
+    aud: clientId,
+    iat: now,
+    exp,
+    jti,
+  })
+  const id = await signRs256(env, {
+    sub: email,
+    token_use: 'id',
+    email,
+    email_verified: true,
+    role,
+    roles: [role],
+    iss: ISS,
+    aud: clientId,
+    iat: now,
+    exp,
+  })
   return {
     AccessToken: access,
     IdToken: id,
@@ -150,8 +144,20 @@ export async function verifyOtpSession(env, session) {
 }
 
 // Verifica un access token (firma + expiración + denylist) y devuelve payload.
+// RS256 es el formato actual; se acepta HS256 para tokens emitidos antes de v1.
 export async function verifyAccessToken(env, token) {
-  const secret = requireSecret(env)
+  const rs = await verifyRs256(env, token)
+  if (rs) {
+    if (rs.token_use !== 'access') return null
+    if (rs.jti && (await kvGet(env, `sess:${rs.jti}`))) return null
+    return rs
+  }
+  let secret
+  try {
+    secret = requireSecret(env)
+  } catch {
+    return null
+  }
   const payload = await verifyToken(token, secret)
   if (!payload || payload.token_use !== 'access') return null
   const denied = await kvGet(env, `sess:${payload.jti}`)

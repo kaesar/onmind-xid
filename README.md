@@ -7,7 +7,7 @@ This is an **IdP/IAM** for [**OnMind-PUB**](https://github.com/kaesar/onmind-pub
 - Runs locally with **Bun** (for mail in dev use **[OnMind-XIN](https://github.com/kaesar/onmind-xin)**, sibling `../xin`, over SMTP).
 - Deploys as a **Cloudflare Worker** (and **Cloudflare Email Service** via the `send_email` binding).
 - Deploys to **AWS Lambda** (Node.js ≥ 20) with **DynamoDB** as an alternative runtime
-  (Function URL or API Gateway, OTP mail not configured yet –> password-only).
+  (Function URL or API Gateway, OTP mail via OnMind-XIN HTTP, else password-only).
 
 Same Hono core everywhere. Only the entrypoint and the bindings differ:
 
@@ -37,7 +37,7 @@ Same Hono core everywhere. Only the entrypoint and the bindings differ:
 | 1 | **Allowlist, no open signup** | Minimal surface, no OTP spam to third parties. Onboarding = editing `xusers.txt` or writing KV. |
 | 2 | **Passwordless first, optional real password** | Single-use OTP (TTL ~5 min) by default, optional bcrypt `email:$2b$` password (TinyAuth-compatible) with OTP fallback, and legacy **dev**-only static `email:key` (SHA-256 on load). |
 | 3 | **Cognito subset, not AWS** | `POST /` with `X-Amz-Target` + `/auth/otp/*` aliases. Ops: `InitiateAuth`, `RespondToAuthChallenge`, `GetUser`, `GlobalSignOut`. `SignUp` for 403. |
-| 4 | **HMAC JWT (`XID_JWT_SECRET`) + RefreshToken opaco** | Access + Id (~1 h). Claims `sub` = email, `token_use` = `access` \| `id`. Refresh opaco (256 bits, 30 d deslizantes, un solo uso con rotación). `GlobalSignOut` revoca access (`jti` denylist) y todos los refresh del usuario. |
+| 4 | **RS256 JWT (`XID_RSA_PRIVATE_JWK`) + opaque RefreshToken** | Access + Id (~1 h), like Cognito; public JWKS at `GET /auth/.well-known/jwks.json`. Claims `sub` = email, `token_use` = `access` \| `id`. Opaque refresh token (256 bits, 30 d sliding, single use with rotation). `GlobalSignOut` revokes access (`jti` denylist) and all the user's refresh tokens. `XID_JWT_SECRET` only signs the intermediate OTP session (HMAC). |
 | 5 | **Dual session channel** | Pages and the Worker don't share cookies. Vue stores the session in `sessionStorage.xidCurrentSession`. The file API uses `Authorization: Bearer` + an HttpOnly `xid_session` cookie on the Worker. |
 | 6 | **Static `email:key` for local only** | Hashed (SHA-256) on load, never logged. In prod `otpKeyHash` is optional and is **not** uploaded from dev. |
 | 7 | **Mail: Cloudflare Email Service in prod, OnMind-XIN locally and on Lambda** | Native `send_email` binding on the Worker. SMTP to XIN (`localhost:1025`) — or HTTP via `XID_XIN_URL` (`POST /send`, the Lambda path) — in dev. Fallback: stdout if `XID_ENV=dev`. |
@@ -168,6 +168,7 @@ bun run dev          # Bun.serve on http://localhost:8787
 ```
 
 The server listens on **a single port: `8787`** (or `PORT`). No extra server.
+Open `http://localhost:8787/login` for the built-in OTP/password page.
 
 > Why `src/dev.js`? Bun auto-serves `export default { fetch }` (Worker pattern) on `3000`. We split the entrypoint: `src/index.js` is the app (exports `fetch`, for Wrangler) and `src/dev.js` starts an explicit `Bun.serve` on `8787` (no default export, a single port).
 
@@ -219,11 +220,11 @@ For a user with `email:key` (`bob@example.com:abc123`), `verify` accepts the key
 
 ## Testing the password flow (no mail needed)
 
-`start` con `password` no genera ni envía OTP: funciona sin SMTP (útil en
-despliegues sin relay, p. ej. contenedor en Azure).
+`start` with `password` does not generate or send an OTP: it works without
+SMTP (useful on deployments with no mail relay, e.g. an Azure container).
 
 ```bash
-# 1) start - devuelve Session sin enviar correo
+# 1) start - returns Session without sending mail
 curl -s -X POST http://localhost:8787/auth/otp/start -H 'Content-Type: application/json' \
   -d '{"email":"bob@example.com","password":"<secret>"}'
 # –> {"ChallengeName":"EMAIL_OTP","Session":"<Session>","ChallengeParameters":{"USERNAME":"...","PASSWORD_ENABLED":"true"}}
@@ -233,17 +234,17 @@ curl -s -X POST http://localhost:8787/auth/otp/verify -H 'Content-Type: applicat
   -d '{"session":"<Session>","email":"bob@example.com","password":"<secret>"}'
 ```
 
-- Sin `password` en `start` –> rama OTP clásica (envía correo, en `production`
-  sin SMTP responde 500).
-- `start` con `password` para un usuario sin hash –> `Password login not enabled`.
+- No `password` in `start` –> classic OTP branch (sends mail; in `production`
+  without a transport it returns 400).
+- `start` with `password` for a user without a hash –> `Password login not enabled`.
 
-## Refresh flow (fachada Cognito)
+## Refresh flow (Cognito facade)
 
-Cada login devuelve además `RefreshToken` (opaco, 30 días deslizantes).
-`POST /auth/refresh {"refreshToken"}` (o `InitiateAuth` con
-`AuthFlow: REFRESH_TOKEN_AUTH`) devuelve un `AuthenticationResult` nuevo y
-rota el refresh (el anterior queda inválido). `GlobalSignOut` revoca el access
-y todos los refresh del usuario.
+Every login also returns a `RefreshToken` (opaque, 30-day sliding).
+`POST /auth/refresh {"refreshToken"}` (or `InitiateAuth` with
+`AuthFlow: REFRESH_TOKEN_AUTH`) returns a new `AuthenticationResult` and
+rotates the refresh token (the previous one becomes invalid). `GlobalSignOut`
+revokes the access token and all the user's refresh tokens.
 
 ```bash
 curl -s -X POST http://localhost:8787/auth/refresh -H 'Content-Type: application/json' \
@@ -266,20 +267,24 @@ curl -s http://localhost:8787/health
 | `POST /` | `X-Amz-Target: AWSCognitoIdentityProviderService.<Op>` | `InitiateAuth`, `RespondToAuthChallenge`, `GetUser`, `GlobalSignOut`, `SignUp`(403) |
 | `POST /auth/otp/start` | InitiateAuth alias | body `{ email }` |
 | `POST /auth/otp/verify` | RespondToAuthChallenge alias | body `{ session, email, code }` |
+| `GET /auth/.well-known/jwks.json` | JWKS | RS256 public key (`kid`) for Cognito access/id tokens |
+| `GET /login` | built-in login page | email form; redirects to `next` if already signed in |
+| `POST /login` | built-in login page | starts/verifies OTP or password, sets `xid_session`, redirects to `next` |
+| `GET /auth/forward` | forward auth for reverse proxies | `200` + `Remote-User`/`Remote-Email`/`Remote-Name`/`Remote-Role`/`Remote-Groups`, else `401` or `302` to `/login` (or `XID_LOGIN_URL`) |
 | `GET /auth/me` | GetUser alias | Bearer |
 | `POST /auth/logout` | GlobalSignOut alias | Bearer |
 | `POST /oauth2/token` | hosted-UI style `client_credentials` (B2B) | Basic or body `client_id`+`client_secret` |
 | `GET /v1/files?path=docs/secret.md` | file manager | Bearer |
 | `GET /files/*` | file manager | Bearer |
-| `GET /admin/users` | admin: allowlist + roles (no hashes) | `x-api-key` o Bearer admin |
-| `POST /admin/users` | admin: add `{ email }` | `x-api-key` o Bearer admin |
-| `DELETE /admin/users/:email` | admin: remove from allowlist | `x-api-key` o Bearer admin |
-| `PUT /admin/users/:email/role` | admin: set `{ role: admin\|owner\|user\|guest }` | `x-api-key` o Bearer admin |
-| `GET /admin/clients` | admin: machine clients (no secrets) | `x-api-key` o Bearer admin |
-| `POST /admin/clients` | admin: create `{ clientId, scopes?, secret? }` –> secret once | `x-api-key` o Bearer admin |
-| `PUT /admin/clients/:id` | admin: update scopes | `x-api-key` o Bearer admin |
-| `POST /admin/clients/:id/rotate` | admin: rotate secret –> secret once | `x-api-key` o Bearer admin |
-| `DELETE /admin/clients/:id` | admin: remove client | `x-api-key` o Bearer admin |
+| `GET /admin/users` | admin: allowlist + roles (no hashes) | `x-api-key` or Bearer admin |
+| `POST /admin/users` | admin: add `{ email }` | `x-api-key` or Bearer admin |
+| `DELETE /admin/users/:email` | admin: remove from allowlist | `x-api-key` or Bearer admin |
+| `PUT /admin/users/:email/role` | admin: set `{ role: admin\|owner\|user\|guest }` | `x-api-key` or Bearer admin |
+| `GET /admin/clients` | admin: machine clients (no secrets) | `x-api-key` or Bearer admin |
+| `POST /admin/clients` | admin: create `{ clientId, scopes?, secret? }` –> secret once | `x-api-key` or Bearer admin |
+| `PUT /admin/clients/:id` | admin: update scopes | `x-api-key` or Bearer admin |
+| `POST /admin/clients/:id/rotate` | admin: rotate secret –> secret once | `x-api-key` or Bearer admin |
+| `DELETE /admin/clients/:id` | admin: remove client | `x-api-key` or Bearer admin |
 | `GET /health` | health | — |
 
 Errors: `400`/`403` + `{ "__type": "<Exception>", "message": "..." }` (Cognito shape).
@@ -352,8 +357,10 @@ compatible with generic OIDC clients and MSAL. Verified end-to-end locally
 
 Notes:
 
-- Entra tokens are signed **RS256** (`XID_RSA_PRIVATE_JWK`, ephemeral pair in dev). Cognito ones
-  stay HS256. `userinfo` accepts both. `GET /v1/files` accepts both (`sub`=email).
+- Both façades sign **RS256** with the same key (`XID_RSA_PRIVATE_JWK`, ephemeral pair in dev).
+  Public keys: `GET /auth/.well-known/jwks.json` (Cognito) and
+  `GET /{tenant}/discovery/v2.0/keys` (Entra). `userinfo` and `GET /v1/files` accept both
+  façades, and legacy HS256 access tokens are still accepted during the transition.
 - Interactive flow = public clients (no secret, ignored if sent). B2B = `client_credentials`
   with secret (see below). PKCE `S256` is optional but verified if sent.
 - Users with a bcrypt password can sign in with it (`mode=password`, masked CUI
@@ -414,7 +421,7 @@ Manages `xusers.txt` and `xclients.txt` with args or, if missing, interactively
 bun run cli                                           # interactive menu (no args)
 bun run cli user add alice@example.com --key abc123   # --key '' = OTP only
 bun run cli user add dave@example.com --role owner    # OTP only + [owner] tag
-bun run cli user key bob@example.com --key nuevo      # set/change dev key (keeps the role tag)
+bun run cli user key bob@example.com --key new-secret # set/change dev key (keeps the role tag)
 bun run cli user password bob@example.com             # set/change bcrypt password (prompted, hashed)
 bun run cli user role alice@example.com admin         # admin | owner | user | guest
 bun run cli user rm alice@example.com                 # asks unless --yes
@@ -436,7 +443,7 @@ except `--gen`/OTP-only defaults. For prod, run the bootstrap scripts after
 | Variable | Usage |
 | --- | --- |
 | `PORT` | local port (default `8787`) |
-| `XID_JWT_SECRET` | ≥ 32 bytes, if missing in dev an ephemeral one is generated, else: `export XID_JWT_SECRET=$(openssl rand -hex 32)` |
+| `XID_JWT_SECRET` | ≥ 32 bytes; only signs the short-lived OTP session (access/id tokens are RS256). If missing in dev an ephemeral one is generated, else: `export XID_JWT_SECRET=$(openssl rand -hex 32)` |
 | `XID_MAIL_FROM` | sender (e.g. `noreply@mx.tudominio.com`) |
 | `XID_SMTP_HOST` / `XID_SMTP_PORT` | dev SMTP (default `127.0.0.1:1025` for XIN, skip with `XID_SMTP_DISABLED=1`) |
 | `XID_XIN_URL` | XIN base URL (e.g. `http://localhost:8788`) –> OTP mail via `POST /send`. The only mail transport that works on Lambda |
@@ -451,9 +458,60 @@ except `--gen`/OTP-only defaults. For prod, run the bootstrap scripts after
 | `XID_META_TABLE` / `XID_USERS_TABLE` / `XID_CLIENTS_TABLE` | Lambda: DynamoDB table per binding (defaults `xmeta`/`xusers`/`xclients`, `none` = disabled) |
 | `XID_DYNAMO_ENDPOINT` | Lambda/tests: custom DynamoDB endpoint (e.g. local) |
 | `XID_ENV` | `dev` (console fallback) \| `production` |
-| `XID_RSA_PRIVATE_JWK` | RSA private JWK (`bun scripts/gen-rsa-jwk.js`), ephemeral in dev if missing |
+| `XID_RSA_PRIVATE_JWK` | RSA private JWK (`bun scripts/gen-rsa-jwk.js`) signing the access/id tokens of **both** façades; ephemeral in dev if missing, set it in production or tokens won't validate across instances |
 | `XID_TENANT_ID` | `tid` for `common`/`organizations`/`consumers` (default `xid`) |
 | `XID_REDIRECT_ALLOWLIST` | allowed `redirect_uri`/`post_logout_redirect_uri` (comma-separated, trailing `*` = prefix). Open in dev if empty, denied in prod |
+| `XID_COOKIE_DOMAIN` | optional `Domain` for `xid_session` (e.g. `.example.com`), so subdomains share the session. Host-only when unset |
+| `XID_LOGIN_URL` | optional override for the login page used by `/auth/forward`; defaults to the built-in `/login`. Point it at the app's own page (e.g. PUB `/access`) if you prefer |
+
+## Reverse proxy (Caddy)
+
+`GET /auth/forward` is a forward-auth endpoint for Caddy's `forward_auth`.
+It validates the
+`xid_session` cookie or a `Bearer` token and returns `200` with the identity
+headers `Remote-User`, `Remote-Email`, `Remote-Name`, `Remote-Role` and
+`Remote-Groups`. API clients without a session get `401`; browsers
+(`Accept: text/html`) are redirected to `XID_LOGIN_URL?next=<original path>`,
+which defaults to the built-in `/login` page.
+
+```caddyfile
+example.com {
+    @xid path /auth/* /login /cui/* /v1/* /oauth2/* /admin/* /health
+    handle @xid {
+        reverse_proxy xid:8787
+    }
+
+    handle {
+        forward_auth xid:8787 {
+            uri /auth/forward
+            copy_headers Remote-User Remote-Email Remote-Name Remote-Role Remote-Groups
+        }
+        reverse_proxy app:8080
+    }
+}
+```
+
+```bash
+XID_COOKIE_DOMAIN=.example.com   # optional, for subdomains
+# XID_LOGIN_URL=https://app.example.com/access   # optional app login page
+```
+
+Notes:
+
+- `GET /login` is the built-in page (email → OTP code or bcrypt password). It
+  sets the same `xid_session` cookie as the JSON API and redirects to `next`.
+  `/cui/*` is the login bundle, so both paths must reach XID.
+- `Remote-User` and `Remote-Email` carry the full email; `Remote-Role` and
+  `Remote-Groups` carry the XID role (`admin|owner|user|guest`).
+- To use the app's own login page instead (e.g. PUB `/access`), set
+  `XID_LOGIN_URL` and exclude that route from `forward_auth`; otherwise it
+  redirects to itself in a loop.
+- `xid_session` is host-only by default. Setting `XID_COOKIE_DOMAIN` to the
+  parent domain (e.g. `.example.com`) shares it across subdomains. If the login
+  page lives on a different subdomain than XID, call XID with
+  `credentials: 'include'` (CORS allows credentials for `XID_CORS_ORIGINS`).
+- Keep the backend reachable **only** through Caddy. Otherwise a client can
+  send `Remote-*` headers itself.
 
 ## Cloudflare deploy (summary)
 
@@ -581,8 +639,10 @@ deliberately keep it, `files/`):
 - Trigger: **Function URL** (auth NONE) or API Gateway HTTP API (payload v2) —
   `hono/aws-lambda` supports both. The CDK stack uses an HTTP API
   (`ANY /` + `ANY /{proxy+}`).
-- Secrets via env vars: `XID_JWT_SECRET`, `XID_REDIRECT_ALLOWLIST`,
-  `XID_CORS_ORIGINS`, `XID_RSA_PRIVATE_JWK` (ephemeral dev pair if missing).
+- Secrets via env vars: `XID_JWT_SECRET` (OTP session), `XID_REDIRECT_ALLOWLIST`,
+  `XID_CORS_ORIGINS`, `XID_RSA_PRIVATE_JWK` (signs access/id tokens; a fixed
+  key is required in production, otherwise each Lambda instance uses its own
+  ephemeral pair and tokens stop validating).
 - IP rate limit uses `x-forwarded-for` (Function URL/API GW). On Cloudflare it
   is still `cf-connecting-ip`.
 - Files and login assets are served from the FS (`XID_FILES_ROOT`,
@@ -627,9 +687,3 @@ Considering the following:
 - `AsAccess.vue` unlocks `hide: 2` with a session. Without a session it redirects to `/access?next=`.  
 -`XID_FILES=1` (PUB's **own** build flag read in `site-config.mjs` — not the Worker KV binding of the same name above) makes the client also fetch the body via
 - `GET {XID_URL}/v1/files?path=` and inject it. `XID_URL` could be the deployed worker address.
-
----
-
-## Status
-
-Implemented and verified locally (Bun + XIN): end-to-end OTP flow, JWT tokens, `/auth/me`, files (200/401/404/traversal 400), CORS, PUB build with `PUB_XID=1`. Reproducible smoke suite: `bun run smoke` (80 checks in-process, no ports). Deploy configuration still **pending** (Cloudflare Email, KV IDs, secrets).

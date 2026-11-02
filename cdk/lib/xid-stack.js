@@ -9,6 +9,10 @@
 //                    history. NOTE: embedded in the Lambda environment (CFN
 //                    template in cdk.out, git-ignored); rotate to Secrets
 //                    Manager for long-lived prod.
+//   rsaPrivateJwk    XID_RSA_PRIVATE_JWK (JSON) signing access/id tokens for
+//                    both façades (RS256). Prefer the XID_RSA_PRIVATE_JWK env
+//                    var. Without it each instance generates an ephemeral pair
+//                    and tokens stop validating across cold starts.
 //   removalPolicy    retain (default, prod) | destroy (throwaway/Floci envs)
 //   deletionProtection  true (default) | false — blocks even explicit
 //                    DeleteTable while the stack exists
@@ -99,6 +103,16 @@ class XidStack extends cdk.Stack {
       XID_CLIENTS_TABLE: clientsTable.tableName,
       XID_META_TABLE: metaTable.tableName,
     }
+    const rsaPrivateJwk =
+      process.env.XID_RSA_PRIVATE_JWK || String(ctx(this, 'rsaPrivateJwk', ''))
+    if (rsaPrivateJwk) fnEnv.XID_RSA_PRIVATE_JWK = rsaPrivateJwk
+    else
+      console.warn(
+        '[xid] XID_RSA_PRIVATE_JWK not set: Lambda will use an ephemeral RSA ' +
+          'key per instance and access/id tokens will not validate across ' +
+          'cold starts. Set XID_RSA_PRIVATE_JWK (see scripts/gen-rsa-jwk.js).'
+      )
+
     const cors = ctxList(this, 'corsOrigins')
     if (cors.length) fnEnv.XID_CORS_ORIGINS = cors.join(',')
     const redirects = ctxList(this, 'redirectAllowlist')

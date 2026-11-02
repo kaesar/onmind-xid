@@ -16,9 +16,23 @@ import { issueOtpSession, verifyOtpSession } from './session.js'
 import { startOtp, verifyOtp, otpAttemptsLeft, clearOtp } from './otp.js'
 import { verifyPassword, checkPasswordRateLimit } from './passwords.js'
 import { sendMail, makeOtpMessage } from './mail.js'
+import { kvIncr } from './kv.js'
+import { ipOf } from './clients.js'
 import { normalizeEmail, sleep } from './util.js'
 
 const hasSecret = (v) => v !== undefined && v !== null && v !== ''
+
+const RATE_INITIATE_PER_EMAIL = 5
+const RATE_INITIATE_PER_IP = 20
+const RATE_WINDOW = 900 // s (15 min)
+
+// Shared by the Cognito API and the HTML login page: limits how many times an
+// email/IP can start a login (and therefore trigger an OTP mail) per window.
+export async function checkLoginRateLimit(env, email, request) {
+  const emailCount = await kvIncr(env, `rl:email:${email}`, RATE_WINDOW)
+  const ipCount = await kvIncr(env, `rl:ip:${ipOf(request)}`, RATE_WINDOW)
+  return emailCount <= RATE_INITIATE_PER_EMAIL && ipCount <= RATE_INITIATE_PER_IP
+}
 
 // Step 1: resolve user, issue otp_session and (only in otp mode) generate and
 // send the code by mail. Never sends mail in password or legacy mode.

@@ -1,8 +1,7 @@
-import { kvIncr } from './kv.js'
 import { getUser } from './users.js'
 import { getRole } from './users.js'
 import { issueTokenSet, consumeRefreshToken, revokeUserRefreshTokens, denyJti, verifyAccessToken } from './session.js'
-import { beginLogin, finishLogin, hasSecret } from './loginflow.js'
+import { beginLogin, finishLogin, hasSecret, checkLoginRateLimit } from './loginflow.js'
 import { maskEmail, normalizeEmail } from './util.js'
 import {
   getClient,
@@ -18,10 +17,6 @@ import {
 // Cognito Identity Provider subset + REST aliases (see xid/PLAN.md).
 // Contract: handlers return either the success JSON payload or
 // { __type, message, status } which index.js maps to HTTP 4xx, like a real IdP.
-
-const RATE_INITIATE_PER_EMAIL = 5
-const RATE_INITIATE_PER_IP = 20
-const RATE_WINDOW = 900 // s (15 min)
 
 function clientIdFrom(body, env) {
   return body?.ClientId || env?.XID_CLIENT_ID || process.env.XID_CLIENT_ID || 'pub-xid'
@@ -48,9 +43,7 @@ export async function initiateAuth(env, ctx, body) {
   const email = normalizeEmail(body?.AuthParameters?.USERNAME)
   if (!email) return { __type: 'NotAuthorizedException', message: 'Incorrect username or password.', status: 400 }
 
-  const emailCount = await kvIncr(env, `rl:email:${email}`, RATE_WINDOW)
-  const ipCount = await kvIncr(env, `rl:ip:${m2mIpOf(ctx?.request)}`, RATE_WINDOW)
-  if (emailCount > RATE_INITIATE_PER_EMAIL || ipCount > RATE_INITIATE_PER_IP) {
+  if (!(await checkLoginRateLimit(env, email, ctx?.request))) {
     return { __type: 'TooManyRequestsException', message: 'Attempt limit exceeded, please try again later.', status: 400 }
   }
 
