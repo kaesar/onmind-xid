@@ -3,6 +3,7 @@ import { initiateAuth, respondToAuthChallenge, getUserOp, globalSignOut, signUpS
 import { getFileContent } from './files.js'
 import { getAsset } from './assets.js'
 import { registerEntra } from './entra.js'
+import { registerAdmin } from './admin.js'
 
 const app = new Hono()
 
@@ -25,8 +26,8 @@ function corsHeaders(origin, env) {
   return {
     'Access-Control-Allow-Origin': allow || '',
     Vary: 'Origin',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Amz-Target',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Amz-Target, x-api-key',
     'Access-Control-Max-Age': '86400',
   }
 }
@@ -207,6 +208,9 @@ app.get('/cui/*', async (c) => {
     headers: { 'Content-Type': res.contentType, 'Cache-Control': 'public, max-age=3600' },
   })
 })
+
+// ---------------- Admin API (users + clients, x-api-key) ----------------
+registerAdmin(app)
 
 // ---------------- Fachada Entra ID (simulación OIDC sobre el mismo core) ----------------
 registerEntra(app)

@@ -15,6 +15,7 @@ const { DynamoDBClient, CreateTableCommand, DescribeTableCommand, UpdateTimeToLi
 import { createDynamoBindings, resolveTableNames } from '../src/dynamo.js'
 import { parseTxt as parseUsers } from '../src/users.js'
 import { parseTxt as parseClients } from '../src/clients.js'
+import { defaultRole } from '../src/roles.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const args = process.argv.slice(2)
@@ -78,9 +79,9 @@ if (create) {
 // ---------------- entries ----------------
 const userEntries = []
 if (fs.existsSync(usersTxt)) {
-  const users = await parseUsers(fs.readFileSync(usersTxt, 'utf-8'))
+  const users = await parseUsers(fs.readFileSync(usersTxt, 'utf-8'), env)
   for (const user of users.values()) {
-    const value = { email: user.email }
+    const value = { email: user.email, role: user.role || defaultRole(env) }
     if (user.passwordHash) value.passwordHash = user.passwordHash // bcrypt: always uploaded
     if (includeDevKeys && user.otpKeyHash) value.otpKeyHash = user.otpKeyHash
     userEntries.push({ key: user.email, value: JSON.stringify(value) })

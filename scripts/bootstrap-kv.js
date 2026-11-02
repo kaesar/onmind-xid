@@ -9,6 +9,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseTxt } from '../src/users.js'
+import { defaultRole } from '../src/roles.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const txtPath = path.resolve(process.env.XID_USERS_TXT || path.join(__dirname, '..', 'xusers.txt'))
@@ -21,10 +22,10 @@ if (!fs.existsSync(txtPath)) {
   process.exit(1)
 }
 
-const users = await parseTxt(fs.readFileSync(txtPath, 'utf-8'))
+const users = await parseTxt(fs.readFileSync(txtPath, 'utf-8'), process.env)
 const entries = []
 for (const user of users.values()) {
-  const value = { email: user.email }
+  const value = { email: user.email, role: user.role || defaultRole(process.env) }
   if (user.passwordHash) value.passwordHash = user.passwordHash // bcrypt: verificador legítimo, siempre se sube
   if (includeDevKeys && user.otpKeyHash) value.otpKeyHash = user.otpKeyHash
   entries.push({ key: user.email, value: JSON.stringify(value), email: user.email })

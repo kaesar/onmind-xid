@@ -1,6 +1,7 @@
 import { createRequire } from 'node:module'
 import { base64UrlDecode, base64urlEncode, constantTimeEqual } from './util.js'
 import { kvDelete, kvGet, kvPut } from './kv.js'
+import { getRole } from './users.js'
 
 const require = createRequire(import.meta.url)
 
@@ -87,10 +88,13 @@ export async function issueTokens(env, email, clientId) {
   const now = Math.floor(Date.now() / 1000)
   const exp = now + ACCESS_TOKEN_TTL
   const jti = crypto.randomUUID()
+  const role = await getRole(env, email)
   const access = await signToken(
     {
       sub: email,
       token_use: 'access',
+      role,
+      roles: [role],
       iss: ISS,
       aud: clientId,
       iat: now,
@@ -105,6 +109,8 @@ export async function issueTokens(env, email, clientId) {
       token_use: 'id',
       email,
       email_verified: true,
+      role,
+      roles: [role],
       iss: ISS,
       aud: clientId,
       iat: now,

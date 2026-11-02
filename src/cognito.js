@@ -1,5 +1,6 @@
 import { kvIncr } from './kv.js'
 import { getUser } from './users.js'
+import { getRole } from './users.js'
 import { issueTokenSet, consumeRefreshToken, revokeUserRefreshTokens, denyJti, verifyAccessToken } from './session.js'
 import { beginLogin, finishLogin, hasSecret } from './loginflow.js'
 import { maskEmail, normalizeEmail } from './util.js'
@@ -65,7 +66,7 @@ export async function initiateAuth(env, ctx, body) {
     if (started.reason === 'mail_unavailable') {
       return {
         __type: 'InvalidParameterException',
-        message: 'Email delivery is not configured on this deployment; password login required.',
+        message: 'Email delivery is not configured on this deployment, password login required.',
         status: 400,
       }
     }
@@ -120,11 +121,13 @@ export async function getUserOp(env, ctx, body) {
   const user = await getUser(env, payload.sub)
   if (!user) return { __type: 'NotAuthorizedException', message: 'Invalid access token.', status: 400 }
 
+  const role = await getRole(env, payload.sub)
   return {
     Username: payload.sub,
     UserAttributes: [
       { Name: 'email', Value: payload.sub },
       { Name: 'email_verified', Value: 'true' },
+      { Name: 'custom:role', Value: role },
     ],
   }
 }

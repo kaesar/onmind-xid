@@ -18,7 +18,7 @@
 // Default import + destructuring: the SDK ships as CJS and Bun cannot resolve
 // ESM named imports from dist-cjs (in Node ESM default = module.exports).
 import dynamodb from '@aws-sdk/client-dynamodb'
-const { DynamoDBClient, GetItemCommand, PutItemCommand, DeleteItemCommand } = dynamodb
+const { DynamoDBClient, GetItemCommand, PutItemCommand, DeleteItemCommand, ScanCommand } = dynamodb
 
 const MIN_TTL = 60 // s, same minimum as Cloudflare KV
 
@@ -80,6 +80,31 @@ export class DynamoKV {
 
   async delete(key) {
     await this.client.send(new DeleteItemCommand({ TableName: this.tableName, Key: this.key(key) }))
+  }
+
+  // Minimal KV-compatible list used by the admin API (allowlist/client tables
+  // are small). Scan + begins_with(pk, prefix), with cursor pagination.
+  async list(opts = {}) {
+    const prefix = String(opts.prefix || '')
+    const params = {
+      TableName: this.tableName,
+      ProjectionExpression: '#pk',
+      ExpressionAttributeNames: { '#pk': 'pk' },
+    }
+    if (opts.cursor) {
+      try { params.ExclusiveStartKey = JSON.parse(opts.cursor) } catch { /* ignore */ }
+    }
+    if (prefix) {
+      params.FilterExpression = 'begins_with(#pk, :prefix)'
+      params.ExpressionAttributeValues = { ':prefix': { S: prefix } }
+    }
+    const res = await this.client.send(new ScanCommand(params))
+    const keys = (res.Items || []).map((item) => ({ name: item.pk?.S })).filter((x) => x.name)
+    return {
+      keys,
+      list_complete: !res.LastEvaluatedKey,
+      cursor: res.LastEvaluatedKey ? JSON.stringify(res.LastEvaluatedKey) : undefined,
+    }
   }
 }
 

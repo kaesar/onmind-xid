@@ -24,6 +24,7 @@ import { kvGet, kvPut, kvDelete } from './kv.js'
 import { getUser } from './users.js'
 import { beginLogin, finishLogin } from './loginflow.js'
 import { verifyAccessToken, denyJti } from './session.js'
+import { getRole } from './users.js'
 import { normalizeEmail, isValidEmail, maskEmail, sha256Hex } from './util.js'
 import { signRs256, verifyRs256, getPublicJwk } from './entra-keys.js'
 import { cuiUrl } from './assets.js'
@@ -153,15 +154,18 @@ async function issueEntraTokenSet(env, { email, clientId, scope, nonce, origin, 
   const oid = await sha256Hex(email.toLowerCase())
   const jti = typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : randomB64Url(16)
   const scp = scope || 'openid profile email'
+  const role = await getRole(env, email)
 
   const access = await signRs256(env, {
     iss, aud: clientId, sub: email, oid, tid,
     preferred_username: email, email, email_verified: true,
+    role, roles: [role],
     scp, iat: now, exp, jti,
   })
   const idPayload = {
     iss, aud: clientId, sub: email, oid, tid,
     preferred_username: email, email, email_verified: true,
+    role, roles: [role],
     name: email.split('@')[0],
     iat: now, exp,
   }
@@ -714,6 +718,7 @@ export async function handleUserinfo(c) {
   }
   const email = payload.sub
   const oid = payload.oid || (await sha256Hex(email.toLowerCase()))
+  const role = await getRole(env, email)
   return c.json({
     sub: email,
     oid,
@@ -722,6 +727,8 @@ export async function handleUserinfo(c) {
     email_verified: true,
     preferred_username: email,
     name: email.split('@')[0],
+    role,
+    roles: [role],
   })
 }
 

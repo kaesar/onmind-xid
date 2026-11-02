@@ -1,6 +1,8 @@
 # xusers.txt — local allowlist (NOT versioned)
 #
 # Format:
+#   [role] email[:secret]
+#
 #   email                          → registered; OTP by mail (OnMind-XIN SMTP in dev)
 #   email:$2b$...                  → allowlist + real password (bcrypt, TinyAuth-compatible).
 #                                    Enables password login (Cognito PASSWORD / authorize
@@ -8,11 +10,17 @@
 #                                    Generate with: bun run cli user password <email>
 #   email:key                      → legacy static dev key (SHA-256 on load, dev only).
 #
+# Role tag (optional, always BEFORE the email so it never collides with the
+# secret): [admin] | [owner] | [user] | [guest]. Without a tag the user gets
+# XID_DEFAULT_ROLE (default: user). Access level: guest < user < owner < admin.
+#
 # Comments (#) and blank lines are ignored. Emails are normalized (trim + lower).
 #
 # Examples:
-# alice@example.com
+# [admin] dave@example.com
+# [owner] alice@example.com
 # bob@example.com:$2b$10$z7OWovdf6s59S7M7xCLo1eN.YGF/Mb6t4nIbJWITaGmufrcJRS.he  (= abc123, dev only)
+# [guest] carol@example.com:staticdev
 
 alice@example.com
 bob@example.com:$2b$10$z7OWovdf6s59S7M7xCLo1eN.YGF/Mb6t4nIbJWITaGmufrcJRS.he

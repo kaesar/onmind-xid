@@ -6,6 +6,7 @@
 //   bun cli/xid.js user add alice@example.com [--key abc123]
 //   bun cli/xid.js user key bob@example.com --key new [--remove-key]
 //   bun cli/xid.js user rm alice@example.com [--yes]
+//   bun cli/xid.js user role alice@example.com admin
 //   bun cli/xid.js user list
 //   bun cli/xid.js client add svc-billing [--scopes files.read] [--secret ...]
 //   bun cli/xid.js client scopes svc-billing --scopes files.read,other
@@ -21,6 +22,8 @@ import { fileURLToPath } from 'node:url'
 import { randomBytes } from 'node:crypto'
 import * as p from '@clack/prompts'
 import { hashPassword } from '../src/passwords.js'
+import { defaultRole, ROLES } from '../src/roles.js'
+import { formatUserLine, parseUserLine, setRole } from '../src/users.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const root = path.resolve(__dirname, '..')
@@ -81,15 +84,13 @@ function fail(msg) {
   process.exit(1)
 }
 
-// ---------------- users (xusers.txt: `email` or `email:key`) ----------------
+// ---------------- users (xusers.txt: `[role] email[:key]`) ----------------
 
 function findUser(lines, email) {
   const norm = email.trim().toLowerCase()
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim()
-    if (!line || line.startsWith('#')) continue
-    const id = line.split(':')[0].trim().toLowerCase()
-    if (id === norm) return i
+    const parsed = parseUserLine(lines[i])
+    if (parsed && parsed.email === norm) return i
   }
   return -1
 }
@@ -99,9 +100,32 @@ async function userCmd(action, args, flags) {
   const lines = readLines(file)
 
   if (action === 'list') {
-    const users = lines.filter((l) => l.trim() && !l.trim().startsWith('#'))
+    const users = lines.map(parseUserLine).filter(Boolean)
     if (!users.length) p.log.info(`No users in ${file}.`)
-    else for (const u of users) p.log.message(u.trim().replace(/:.*$/, ':***'))
+    else for (const u of users) {
+      p.log.message(`${u.email}  role=${u.role || defaultRole(process.env)}`)
+    }
+    return
+  }
+
+  if (action === 'role') {
+    const email = String((await askMissing(args[0], { message: 'User email:' })).trim().toLowerCase())
+    let role = flags.role || args[1]
+    if (!role) {
+      if (!INTERACTIVE) fail(`Missing role (${ROLES.join('|')}).`)
+      role = await p.select({ message: 'Role:', options: ROLES.map((value) => ({ value, label: value })) })
+      if (p.isCancel(role)) {
+        p.cancel('Cancelled.')
+        process.exit(1)
+      }
+    }
+    try {
+      const saved = await setRole({ ...process.env, XID_USERS_TXT: file }, email, role)
+      if (!saved) fail(`${email} does not exist (use: user add).`)
+      p.log.success(`${email} role=${saved} in ${file}.`)
+    } catch (err) {
+      fail(err?.message || String(err))
+    }
     return
   }
 
@@ -116,6 +140,13 @@ async function userCmd(action, args, flags) {
       fail('Use --key or --password, not both.')
     }
     let line = email
+    const current = idx >= 0 ? parseUserLine(lines[idx]) : null
+    let role = current?.role || null
+    if (flags.role !== undefined) {
+      role = String(flags.role).trim().toLowerCase()
+      if (!ROLES.includes(role)) fail(`Invalid role (${ROLES.join('|')}).`)
+    }
+    let secret = null
     if (flags['remove-key'] || flags['remove-password']) {
       // OTP only: drop any second field.
     } else if (flags.password !== undefined || action === 'password') {
@@ -125,7 +156,7 @@ async function userCmd(action, args, flags) {
         pw = await p.password({ message: 'Password (bcrypt, never stored in clear):' })
         if (p.isCancel(pw) || !pw) fail('Empty password.')
       }
-      line = `${email}:${await hashPassword(pw)}`
+      secret = await hashPassword(pw)
     } else {
       let key = flags.key
       if (key === undefined) {
@@ -140,8 +171,9 @@ async function userCmd(action, args, flags) {
           process.exit(1)
         }
       }
-      if (key) line = `${email}:${key}`
+      if (key) secret = key
     }
+    line = formatUserLine(email, secret, role)
     if (idx >= 0) lines[idx] = line
     else lines.push(line)
     writeLines(file, lines)
@@ -167,7 +199,7 @@ async function userCmd(action, args, flags) {
     return
   }
 
-  fail(`Unknown user action: ${action || '(empty)'} (add|key|password|rm|list).`)
+  fail(`Unknown user action: ${action || '(empty)'} (add|key|password|role|rm|list).`)
 }
 
 // ---------------- clients (xclients.txt: `id:secret:scopes`) ----------------
@@ -306,9 +338,11 @@ const [domain, action, ...rest] = _
 if (flags.help || flags.h || (!domain && !INTERACTIVE)) {
   console.log(`xid CLI — manages xusers.txt and xclients.txt
 Usage: bun cli/xid.js <user|client> <action> [args] [--flags]
-  user   add <email> [--key k|--password p] | key <email> [--key k|--remove-key] | password <email> [--password p|--remove-password] | rm <email> [--yes] | list
+  user   add <email> [--key k|--password p] [--role r] | key <email> [--key k|--remove-key] [--role r] | password <email> [--password p|--remove-password] | role <email> <admin|owner|user|guest> | rm <email> [--yes] | list
   client add <id> [--scopes s] [--secret s|--gen] | scopes <id> [--scopes s] | rotate <id> | rm <id> [--yes] | list
 Globals: --users <path> --clients <path> --yes --help
+The role lives in xusers.txt as an optional tag: [owner] alice@example.com[:key]
+(no tag → XID_DEFAULT_ROLE, default: user).
 No args opens the interactive menu (clack); same when the action is missing.
 Any other missing required argument is asked interactively (clack).`)
   process.exit(domain ? 1 : 0)
@@ -339,6 +373,7 @@ async function pickMenu() {
             { value: 'add', label: 'Add user' },
             { value: 'key', label: 'Set/change dev key' },
             { value: 'password', label: 'Set/change password (bcrypt)' },
+            { value: 'role', label: 'Set role' },
             { value: 'rm', label: 'Remove user' },
             { value: 'list', label: 'List users' },
           ]

@@ -7,15 +7,15 @@ This is an **IdP/IAM** for [**OnMind-PUB**](https://github.com/kaesar/onmind-pub
 - Runs locally with **Bun** (for mail in dev use **[OnMind-XIN](https://github.com/kaesar/onmind-xin)**, sibling `../xin`, over SMTP).
 - Deploys as a **Cloudflare Worker** (and **Cloudflare Email Service** via the `send_email` binding).
 - Deploys to **AWS Lambda** (Node.js ≥ 20) with **DynamoDB** as an alternative runtime
-  (Function URL or API Gateway; OTP mail not configured yet → password-only).
+  (Function URL or API Gateway, OTP mail not configured yet –> password-only).
 
-Same Hono core everywhere; only the entrypoint and the bindings differ:
+Same Hono core everywhere. Only the entrypoint and the bindings differ:
 
 | Runtime | Entrypoint | Storage bindings | Mail |
 | --- | --- | --- | --- |
-| Local / container (Bun) | `src/dev.js` → `Bun.serve` | none → txt (`xusers.txt`/`xclients.txt`) + in-memory `Map` + FS | SMTP (XIN :1025) or XIN HTTP (`XID_XIN_URL`) / console in dev |
-| Cloudflare Worker | `src/index.js` → `export default { fetch }` (`wrangler deploy`) | KV `XID_META`/`XID_USERS`/`XID_CLIENTS`/`XID_FILES` | Cloudflare Email Service (`send_email`) |
-| AWS Lambda | `src/lambda.js` → `src/lambda.handler` (Function URL / API GW v2) | DynamoDB `xmeta`/`xusers`/`xclients` (`XID_*_TABLE`, `XID_DYNAMO_ENDPOINT` for LocalStack/dynamodb-local) | XIN HTTP (`XID_XIN_URL`) · else password login only |
+| Local / container (Bun) | `src/dev.js` –> `Bun.serve` | none –> txt (`xusers.txt`/`xclients.txt`) + in-memory `Map` + FS | SMTP (XIN :1025) or XIN HTTP (`XID_XIN_URL`) / console in dev |
+| Cloudflare Worker | `src/index.js` –> `export default { fetch }` (`wrangler deploy`) | KV `XID_META`/`XID_USERS`/`XID_CLIENTS`/`XID_FILES` | Cloudflare Email Service (`send_email`) |
+| AWS Lambda | `src/lambda.js` –> `src/lambda.handler` (Function URL / API GW v2) | DynamoDB `xmeta`/`xusers`/`xclients` (`XID_*_TABLE`, `XID_DYNAMO_ENDPOINT` for LocalStack/dynamodb-local) | XIN HTTP (`XID_XIN_URL`) · else password login only |
 
 ---
 
@@ -23,7 +23,7 @@ Same Hono core everywhere; only the entrypoint and the bindings differ:
 
 ### What this package does
 
-1. **Authenticates only allowlisted emails** with **email OTP** (passwordless by default; optional real bcrypt password per user with OTP kept as fallback).
+1. **Authenticates only allowlisted emails** with **email OTP** (passwordless by default, optional real bcrypt password per user with OTP kept as fallback).
 2. Exposes a **subset of the Cognito Identity Provider JSON API** (not AWS Cognito).
 3. Serves a minimal **file manager**: `GET` of `hide: 2` article assets with a valid session.
 4. Replaces Userbase in PUB (`PUB_XID`, `AsAccess.vue`, README, `task/initialize.js`).
@@ -35,14 +35,14 @@ Same Hono core everywhere; only the entrypoint and the bindings differ:
 | # | Decision | Rationale |
 |---|----------|-----------|
 | 1 | **Allowlist, no open signup** | Minimal surface, no OTP spam to third parties. Onboarding = editing `xusers.txt` or writing KV. |
-| 2 | **Passwordless first, optional real password** | Single-use OTP (TTL ~5 min) by default; optional bcrypt `email:$2b$` password (TinyAuth-compatible) with OTP fallback; legacy **dev**-only static `email:key` (SHA-256 on load). |
+| 2 | **Passwordless first, optional real password** | Single-use OTP (TTL ~5 min) by default, optional bcrypt `email:$2b$` password (TinyAuth-compatible) with OTP fallback, and legacy **dev**-only static `email:key` (SHA-256 on load). |
 | 3 | **Cognito subset, not AWS** | `POST /` with `X-Amz-Target` + `/auth/otp/*` aliases. Ops: `InitiateAuth`, `RespondToAuthChallenge`, `GetUser`, `GlobalSignOut`. `SignUp` for 403. |
-| 4 | **HMAC JWT (`XID_JWT_SECRET`) + RefreshToken opaco** | Access + Id (~1 h). Claims `sub` = email, `token_use` = `access` \| `id`. Refresh opaco (256 bits, 30 d deslizantes, un solo uso con rotación); `GlobalSignOut` revoca access (`jti` denylist) y todos los refresh del usuario. |
+| 4 | **HMAC JWT (`XID_JWT_SECRET`) + RefreshToken opaco** | Access + Id (~1 h). Claims `sub` = email, `token_use` = `access` \| `id`. Refresh opaco (256 bits, 30 d deslizantes, un solo uso con rotación). `GlobalSignOut` revoca access (`jti` denylist) y todos los refresh del usuario. |
 | 5 | **Dual session channel** | Pages and the Worker don't share cookies. Vue stores the session in `sessionStorage.xidCurrentSession`. The file API uses `Authorization: Bearer` + an HttpOnly `xid_session` cookie on the Worker. |
-| 6 | **Static `email:key` for local only** | Hashed (SHA-256) on load; never logged. In prod `otpKeyHash` is optional and is **not** uploaded from dev. |
-| 7 | **Mail: Cloudflare Email Service in prod; OnMind-XIN locally and on Lambda** | Native `send_email` binding on the Worker; SMTP to XIN (`localhost:1025`) — or HTTP via `XID_XIN_URL` (`POST /send`, the Lambda path) — in dev. Fallback: stdout if `XID_ENV=dev`. |
-| 8 | **Files: local FS + `XID_FILES` KV on the Worker; R2 later** | One KV is enough for a few `hide: 2` markdown files. |
-| 9 | **`xid/` as a sibling package of `rag/`, not inside the VitePress theme** | Different runtime (Worker vs SSG); its own wrangler. |
+| 6 | **Static `email:key` for local only** | Hashed (SHA-256) on load, never logged. In prod `otpKeyHash` is optional and is **not** uploaded from dev. |
+| 7 | **Mail: Cloudflare Email Service in prod, OnMind-XIN locally and on Lambda** | Native `send_email` binding on the Worker. SMTP to XIN (`localhost:1025`) — or HTTP via `XID_XIN_URL` (`POST /send`, the Lambda path) — in dev. Fallback: stdout if `XID_ENV=dev`. |
+| 8 | **Files: local FS + `XID_FILES` KV on the Worker. R2 later** | One KV is enough for a few `hide: 2` markdown files. |
+| 9 | **`xid/` as a sibling package of `rag/`, not inside the VitePress theme** | Different runtime (Worker vs SSG), its own wrangler. |
 | 10 | **Hono `export default { fetch }`** | A single entrypoint for `bun --hot`, `wrangler dev`, and deploy. |
 
 ### Architecture (mermaid)
@@ -123,7 +123,7 @@ sequenceDiagram
 | Users | `xusers.txt` (FS) | KV `XID_USERS` |
 | OTP / rate limit | In-memory `Map` **or** the same KV under `wrangler dev` | KV prefix `otp:`, `rl:` |
 | Files | `XID_FILES_ROOT` (default `xid/files`) | KV `XID_FILES` (key = path) |
-| Mail | Send via XIN: SMTP `XID_SMTP_HOST:XID_SMTP_PORT` (default `127.0.0.1:1025`) or HTTP `XID_XIN_URL` (`POST /send`, required on Lambda); read the OTP via the XIN HTTP API (`GET :8788/messages` — run XIN with `PORT=8788` so it doesn't clash with XID's `:8787`); stdout fallback if `XID_ENV=dev` | `send_email` binding with Cloudflare Email Service (`env.MAIL.send()`); `wrangler dev` simulates it |
+| Mail | Send via XIN: SMTP `XID_SMTP_HOST:XID_SMTP_PORT` (default `127.0.0.1:1025`) or HTTP `XID_XIN_URL` (`POST /send`, required on Lambda). Read the OTP via the XIN HTTP API (`GET :8788/messages` — run XIN with `PORT=8788` so it doesn't clash with XID's `:8787`). Fallback: stdout if `XID_ENV=dev` | `send_email` binding with Cloudflare Email Service (`env.MAIL.send()`). `wrangler dev` simulates it |
 | Bindings | `.env` / `xid/.dev.vars` env | `wrangler.toml` + secrets |
 
 > Detection: if the `env.XID_USERS` binding (KV) exists uses KV adapter, otherwise uses txt.
@@ -144,7 +144,7 @@ flowchart TD
   Get --> Inj[inject HTML/markdown into .VPDoc]
 ```
 
-> `hide: 1` currently has **no** gate in `AsAccess` (only `=== 2`). The MVP doesn't invent new semantics for `hide: 1`: the sidebar already hides it; the SSG body stays public. Follow-up if the same gate is wanted.
+> `hide: 1` currently has **no** gate in `AsAccess` (only `=== 2`). The MVP doesn't invent new semantics for `hide: 1`: the sidebar already hides it. The SSG body stays public. Follow-up if the same gate is wanted.
 
 ---
 
@@ -176,16 +176,19 @@ The server listens on **a single port: `8787`** (or `PORT`). No extra server.
 Create `xusers.txt` (see `xusers.txt.example`):
 
 ```
-alice@example.com                                   # OTP by email only
-bob@example.com:$2b$10$...                          # real password (bcrypt, TinyAuth-compatible)
-carol@example.com:staticdev                         # legacy static dev key (SHA-256 on load)
+alice@example.com                                   # OTP by email only (role: user)
+[owner] dave@example.com                            # OTP + role owner
+[admin] bob@example.com:$2b$10$...                  # real password (bcrypt, TinyAuth-compatible)
+[guest] carol@example.com:staticdev                 # legacy static dev key (SHA-256 on load)
 ```
 
-- `email` alone → passwordless email OTP (production path).
-- `email:$2b$…` → real password login (Cognito `PASSWORD` challenge, authorize
+- `email` alone –> passwordless email OTP (production path).
+- `[role] email` –> same, plus the optional role tag (`admin|owner|user|guest`,
+  before the email so it never collides with the secret). No tag –> `XID_DEFAULT_ROLE`.
+- `email:$2b$…` –> real password login (Cognito `PASSWORD` challenge, authorize
   `mode=password`) with email OTP kept as fallback. Generate with
   `bun run cli user password <email>` (never stored in clear).
-- `email:key` → legacy static dev key accepted as the OTP code (dev only).
+- `email:key` –> legacy static dev key accepted as the OTP code (dev only).
 
 ## Testing the OTP flow
 
@@ -223,16 +226,16 @@ despliegues sin relay, p. ej. contenedor en Azure).
 # 1) start - devuelve Session sin enviar correo
 curl -s -X POST http://localhost:8787/auth/otp/start -H 'Content-Type: application/json' \
   -d '{"email":"bob@example.com","password":"<secret>"}'
-# → {"ChallengeName":"EMAIL_OTP","Session":"<Session>","ChallengeParameters":{"USERNAME":"...","PASSWORD_ENABLED":"true"}}
+# –> {"ChallengeName":"EMAIL_OTP","Session":"<Session>","ChallengeParameters":{"USERNAME":"...","PASSWORD_ENABLED":"true"}}
 
 # 2) verify - AccessToken/IdToken
 curl -s -X POST http://localhost:8787/auth/otp/verify -H 'Content-Type: application/json' \
   -d '{"session":"<Session>","email":"bob@example.com","password":"<secret>"}'
 ```
 
-- Sin `password` en `start` → rama OTP clásica (envía correo; en `production`
+- Sin `password` en `start` –> rama OTP clásica (envía correo, en `production`
   sin SMTP responde 500).
-- `start` con `password` para un usuario sin hash → `Password login not enabled`.
+- `start` con `password` para un usuario sin hash –> `Password login not enabled`.
 
 ## Refresh flow (fachada Cognito)
 
@@ -245,7 +248,7 @@ y todos los refresh del usuario.
 ```bash
 curl -s -X POST http://localhost:8787/auth/refresh -H 'Content-Type: application/json' \
   -d '{"refreshToken":"<RefreshToken>"}'
-# → {"AuthenticationResult":{"AccessToken":"...","IdToken":"...","RefreshToken":"..."}}
+# –> {"AuthenticationResult":{"AccessToken":"...","IdToken":"...","RefreshToken":"..."}}
 ```
 
 ### Health check
@@ -268,15 +271,74 @@ curl -s http://localhost:8787/health
 | `POST /oauth2/token` | hosted-UI style `client_credentials` (B2B) | Basic or body `client_id`+`client_secret` |
 | `GET /v1/files?path=docs/secret.md` | file manager | Bearer |
 | `GET /files/*` | file manager | Bearer |
+| `GET /admin/users` | admin: allowlist + roles (no hashes) | `x-api-key` o Bearer admin |
+| `POST /admin/users` | admin: add `{ email }` | `x-api-key` o Bearer admin |
+| `DELETE /admin/users/:email` | admin: remove from allowlist | `x-api-key` o Bearer admin |
+| `PUT /admin/users/:email/role` | admin: set `{ role: admin\|owner\|user\|guest }` | `x-api-key` o Bearer admin |
+| `GET /admin/clients` | admin: machine clients (no secrets) | `x-api-key` o Bearer admin |
+| `POST /admin/clients` | admin: create `{ clientId, scopes?, secret? }` –> secret once | `x-api-key` o Bearer admin |
+| `PUT /admin/clients/:id` | admin: update scopes | `x-api-key` o Bearer admin |
+| `POST /admin/clients/:id/rotate` | admin: rotate secret –> secret once | `x-api-key` o Bearer admin |
+| `DELETE /admin/clients/:id` | admin: remove client | `x-api-key` o Bearer admin |
 | `GET /health` | health | — |
 
 Errors: `400`/`403` + `{ "__type": "<Exception>", "message": "..." }` (Cognito shape).
+
+## Roles (`admin`, `owner`, `user`, `guest`)
+
+Roles are stored **with the identity**, never in a separate file:
+
+- **Local / container**: optional `[role]` tag at the beginning of the
+  `xusers.txt` line.
+- **KV / DynamoDB**: the `role` field of the `XID_USERS` record.
+
+### Simple RBAC: roles as access levels
+
+Each role is a **level** on a single ordered scale. The level is inspired in the [**OnMind-PUB**](https://github.com/kaesar/onmind-pub) `hide` frontmatter semantics, so the same number identifies the role and the resource it unlocks:
+
+| Role | Level | Meaning | Capabilities |
+| --- | --- | --- | --- |
+| `admin` | `3` | Administrator with superpowers | Everything below + manage users, machine clients and roles (`/admin/*`), across the whole tenant |
+| `owner` | `2` | Owner / holder of the resource or tenant | Full access to the resources/tenant it owns, no global admin API |
+| `user` | `1` | Authorized user | Normal operations, access to the resources granted to it |
+| `guest` | `0` | Guest (read-only and/or restricted) | Read-only (lists and home). Downstream services can enforce it |
+
+> **Access level:** `guest (0) < user (1) < owner (2) < admin (3)`...
+
+The ranks live in `src/roles.js` (`ROLES`, `ROLE_RANK`) and a higher level implies the lower ones.  
+In PUB today only `hide: 1` and `hide: 2` exist (`hide: 0` = public, `hide: 3` is reserved for admin-only content). `/admin/*` is the only server-side gate in XID and it requires `admin`. The other levels are claims hat downstream services (PUB, APIs) can enforce.
+
+```txt
+# xusers.txt — the tag is optional, no tag –> XID_DEFAULT_ROLE (user)
+alice@example.com
+[owner] dave@example.com
+[admin] bob@example.com:$2b$10$...
+[guest] carol@example.com:staticdev
+```
+
+> Just identify the highest level of access to resources or data to assign to a user.
+
+- Missing tag –> `XID_DEFAULT_ROLE` (default `user`).
+- The tag goes **before** the email, so it never collides with the secret
+  (everything after the first `:` is still the secret). An unknown tag discards
+  the line (fail-soft).
+- Comment lines with `#` are preserved. `cli user key|password` keeps the tag.
+- `admin`: manage users, clients and roles.
+- `owner`: owner of a resource or tenant (level 2), no access to `/admin/*`.
+- `user`: normal operations.
+- `guest`: read-only (lists and home, downstream services can enforce it).
+- Access/ID tokens carry `role` and `roles: [role]`. `/auth/me` exposes
+  `custom:role`, Entra `userinfo` exposes `role` + `roles`.
+- `/admin/*` accepts `x-api-key: XID_ADMIN_API_KEY` **or** a Bearer access token
+  whose user has the **current** `admin` role.
+- Role changes apply to the admin API immediately (live lookup). Tokens already
+  issued keep their claim until they expire or are refreshed.
 
 ## Entra ID facade (OIDC simulation, alternative to Cognito)
 
 Same core (allowlist + OTP + file manager), second facade: **OAuth2 v2.0 + OIDC discovery**
 compatible with generic OIDC clients and MSAL. Verified end-to-end locally
-(discovery → `authorize` OTP → `token` with PKCE S256 → `userinfo` → rotating `refresh`).
+(discovery –> `authorize` OTP –> `token` with PKCE S256 –> `userinfo` –> rotating `refresh`).
 
 | Path | Method | Description |
 | --- | --- | --- |
@@ -286,21 +348,21 @@ compatible with generic OIDC clients and MSAL. Verified end-to-end locally
 | `/{tenant}/oauth2/v2.0/token` | `POST` | `grant_type=authorization_code` (with `code_verifier` if PKCE was used) or `refresh_token` (rotation, single use) |
 | `/{tenant}/discovery/v2.0/keys` | `GET` | JWKS (`RS256`, stable `kid` in prod) |
 | `/{tenant}/openid/userinfo` | `GET` | Bearer claims (`sub`=email, `oid`, `tid`, `preferred_username`) |
-| `/{tenant}/oauth2/v2.0/logout` | `GET` | revokes `jti` (denylist); `302 post_logout_redirect_uri?state=` if requested |
+| `/{tenant}/oauth2/v2.0/logout` | `GET` | revokes `jti` (denylist), `302 post_logout_redirect_uri?state=` if requested |
 
 Notes:
 
-- Entra tokens are signed **RS256** (`XID_RSA_PRIVATE_JWK`; ephemeral pair in dev). Cognito ones
-  stay HS256. `userinfo` accepts both; `GET /v1/files` accepts both (`sub`=email).
-- Interactive flow = public clients (no secret; ignored if sent). B2B = `client_credentials`
+- Entra tokens are signed **RS256** (`XID_RSA_PRIVATE_JWK`, ephemeral pair in dev). Cognito ones
+  stay HS256. `userinfo` accepts both. `GET /v1/files` accepts both (`sub`=email).
+- Interactive flow = public clients (no secret, ignored if sent). B2B = `client_credentials`
   with secret (see below). PKCE `S256` is optional but verified if sent.
 - Users with a bcrypt password can sign in with it (`mode=password`, masked CUI
-  input) or fall back to email OTP (`mode=otp` toggle link); users without one
+  input) or fall back to email OTP (`mode=otp` toggle link). Users without one
   are OTP-only. Cognito accepts `ChallengeResponses.PASSWORD` (password guessing
   is rate-limited, 10/15 min).
 - MSAL.js: custom authority `https://<xid-host>/<tenant>` with
   `knownAuthorities: ["<xid-host>"]` + `validateAuthority: false`.
-- In dev `redirect_uri`/`post_logout_redirect_uri` are open; in prod
+- In dev `redirect_uri`/`post_logout_redirect_uri` are open. In prod
   `XID_REDIRECT_ALLOWLIST` is required.
 - Login UI is bilingual (English default): `ui_locales=es` OIDC param or
   `Accept-Language` header selects Spanish.
@@ -321,16 +383,16 @@ curl -s -X POST http://localhost:8787/oauth2/token \
 
 | Path | Grant | Auth | Response |
 | --- | --- | --- | --- |
-| `POST /oauth2/token` (Cognito shape) | `client_credentials` | `Basic` or body | `{access_token, expires_in, token_type, scope}`; errors `{error, error_description}` (+ `WWW-Authenticate` on 401) |
+| `POST /oauth2/token` (Cognito shape) | `client_credentials` | `Basic` or body | `{access_token, expires_in, token_type, scope}`. Errors `{error, error_description}` (+ `WWW-Authenticate` on 401) |
 | `POST /{tenant}/oauth2/v2.0/token` (Entra shape) | `client_credentials` | `Basic` or body | `{access_token, expires_in, token_type, scope}` (no `id_token`/`refresh_token`) |
 
 **Notes**:
 
 - Machine tokens are **RS256**, `sub` = `client_id` (+ `client_id`, `token_use=access`, `scp`/`scope`), ~1 h.
   `GET /v1/files` accepts them only with the `files.read` scope **and** a registered client
-  holding it (user allowlist path unchanged); `userinfo` rejects them (no user identity).
-- Requested `scope` must be a subset of the client's grant (`invalid_scope` otherwise);
-  omitting `scope` grants the full set. Logout revokes via `jti` denylist, same as users.
+  holding it (user allowlist path unchanged). `userinfo` rejects them (no user identity).
+- Requested `scope` must be a subset of the client's grant (`invalid_scope` otherwise).
+  Omitting `scope` grants the full set. Logout revokes via `jti` denylist, same as users.
 - Brute-force guard: rate limit per `client_id` + IP on both token endpoints.
 
 ## Files (local dev)
@@ -351,10 +413,12 @@ Manages `xusers.txt` and `xclients.txt` with args or, if missing, interactively
 ```bash
 bun run cli                                           # interactive menu (no args)
 bun run cli user add alice@example.com --key abc123   # --key '' = OTP only
-bun run cli user key bob@example.com --key nuevo      # set/change dev key
+bun run cli user add dave@example.com --role owner    # OTP only + [owner] tag
+bun run cli user key bob@example.com --key nuevo      # set/change dev key (keeps the role tag)
 bun run cli user password bob@example.com             # set/change bcrypt password (prompted, hashed)
+bun run cli user role alice@example.com admin         # admin | owner | user | guest
 bun run cli user rm alice@example.com                 # asks unless --yes
-bun run cli user list
+bun run cli user list                                 # email + role
 bun run cli client add svc-billing --scopes files.read --gen
 bun run cli client scopes svc-billing --scopes files.read,other
 bun run cli client rotate svc-billing                 # prints new secret once
@@ -374,20 +438,22 @@ except `--gen`/OTP-only defaults. For prod, run the bootstrap scripts after
 | `PORT` | local port (default `8787`) |
 | `XID_JWT_SECRET` | ≥ 32 bytes, if missing in dev an ephemeral one is generated, else: `export XID_JWT_SECRET=$(openssl rand -hex 32)` |
 | `XID_MAIL_FROM` | sender (e.g. `noreply@mx.tudominio.com`) |
-| `XID_SMTP_HOST` / `XID_SMTP_PORT` | dev SMTP (default `127.0.0.1:1025` for XIN; skip with `XID_SMTP_DISABLED=1`) |
-| `XID_XIN_URL` | XIN base URL (e.g. `http://localhost:8788`) → OTP mail via `POST /send`; the only mail transport that works on Lambda |
+| `XID_SMTP_HOST` / `XID_SMTP_PORT` | dev SMTP (default `127.0.0.1:1025` for XIN, skip with `XID_SMTP_DISABLED=1`) |
+| `XID_XIN_URL` | XIN base URL (e.g. `http://localhost:8788`) –> OTP mail via `POST /send`. The only mail transport that works on Lambda |
 | `XID_XIN_API_KEY` | optional `x-api-key` sent to XIN (when XIN has `XIN_API_KEY` set) |
 | `XID_CORS_ORIGINS` | comma-separated CORS allowlist |
 | `XID_CLIENT_ID` | opaque string (default `pub-xid`) |
 | `XID_USERS_TXT` | alternative path to `xusers.txt` |
 | `XID_CLIENTS_TXT` | alternative path to `xclients.txt` |
+| `XID_DEFAULT_ROLE` | role when the user line has no `[role]` tag (`admin\|owner\|user\|guest`, default `user`) |
+| `XID_ADMIN_API_KEY` | optional `x-api-key` for `/admin/*` (scripts/CI). Also accepts Bearer tokens of users with `admin` role |
 | `XID_FILES_ROOT` | local files root (default `./files`) |
 | `XID_META_TABLE` / `XID_USERS_TABLE` / `XID_CLIENTS_TABLE` | Lambda: DynamoDB table per binding (defaults `xmeta`/`xusers`/`xclients`, `none` = disabled) |
 | `XID_DYNAMO_ENDPOINT` | Lambda/tests: custom DynamoDB endpoint (e.g. local) |
 | `XID_ENV` | `dev` (console fallback) \| `production` |
-| `XID_RSA_PRIVATE_JWK` | RSA private JWK (`bun scripts/gen-rsa-jwk.js`); ephemeral in dev if missing |
+| `XID_RSA_PRIVATE_JWK` | RSA private JWK (`bun scripts/gen-rsa-jwk.js`), ephemeral in dev if missing |
 | `XID_TENANT_ID` | `tid` for `common`/`organizations`/`consumers` (default `xid`) |
-| `XID_REDIRECT_ALLOWLIST` | allowed `redirect_uri`/`post_logout_redirect_uri` (comma-separated, trailing `*` = prefix); open in dev if empty, denied in prod |
+| `XID_REDIRECT_ALLOWLIST` | allowed `redirect_uri`/`post_logout_redirect_uri` (comma-separated, trailing `*` = prefix). Open in dev if empty, denied in prod |
 
 ## Cloudflare deploy (summary)
 
@@ -455,7 +521,7 @@ services:
 ```
 
 Notes: the image defaults to `XID_ENV=production` with FS paths under `/data`
-(override via env); with `production` OTP email requires a reachable SMTP
+(override via env). With `production` OTP email requires a reachable SMTP
 (e.g. XIN, see the `xin` service above) — static `email:key` users skip mail
 (dev only). Secrets via env/vault, never baked in.
 
@@ -473,12 +539,12 @@ as the Cloudflare KV binding (`get`/`get|json`/`put{expirationTtl}`/`delete`), s
 | `XID_USERS` | `xusers` | `XID_USERS_TABLE` |
 | `XID_CLIENTS` | `xclients` | `XID_CLIENTS_TABLE` |
 
-> `XID_*_TABLE=none` disables a binding → falls back to the local adapter
+> `XID_*_TABLE=none` disables a binding –> falls back to the local adapter
 > (txt / in-memory `Map` / FS). `XID_DYNAMO_ENDPOINT` points to a local
 > DynamoDB (tests).
 
-**Entry point:** `src/lambda.js` → handler **`src/lambda.handler`** (ESM,
-`"type": "module"`). The app env = `process.env` + the three bindings;
+**Entry point:** `src/lambda.js` –> handler **`src/lambda.handler`** (ESM,
+`"type": "module"`). The app env = `process.env` + the three bindings.
 `XID_ENV` defaults to `production` on Lambda.
 
 **Mail on Lambda = XIN over HTTP.** There is no SMTP listener on Lambda, so set
@@ -486,17 +552,17 @@ as the Cloudflare KV binding (`get`/`get|json`/`put{expirationTtl}`/`delete`), s
 (local `http://<host>:8788`, or the deployed XIN HTTP API) plus optional
 `XID_XIN_API_KEY` — `sendMail` then delivers the OTP with `POST /send`
 (`{via:"xin", messageId}`). Transport order everywhere: Cloudflare `send_email`
-binding → XIN HTTP (if `XID_XIN_URL` is set) → SMTP (`XID_SMTP_HOST/PORT`,
-skippable with `XID_SMTP_DISABLED=1`) → console fallback in dev, throw in
+binding –> XIN HTTP (if `XID_XIN_URL` is set) –> SMTP (`XID_SMTP_HOST/PORT`,
+skippable with `XID_SMTP_DISABLED=1`) –> console fallback in dev, throw in
 production. Without any transport, passwordless (OTP) requests fail fast with
-`400 Email delivery is not configured on this deployment; password login required.`
+`400 Email delivery is not configured on this deployment, password login required.`
 Users in `xusers` with a bcrypt password (`email:$2b$…`) can always use password
 login instead.
 
 ```bash
 export AWS_REGION=eu-west-1 XID_JWT_SECRET=$(openssl rand -hex 32)
 bun run kv:dynamo --create          # tables xusers / xclients / xmeta (TTL on xmeta)
-bun run kv:dynamo --apply           # xusers.txt + xclients.txt → tables (hashes, never secrets)
+bun run kv:dynamo --apply           # xusers.txt + xclients.txt –> tables (hashes, never secrets)
 bun run kv:dynamo                   # dry-run: print entries without writing
 ```
 
@@ -507,31 +573,31 @@ production DynamoDB settings (retain / deletion protection / PITR) and how to
 test the whole stack locally against the [Floci](https://github.com/floci-io/floci)
 AWS simulator (port `4566`).
 
-Deploy notes (zip or image; the artifact includes `src/`, `vendor/` and, if you
+Deploy notes (zip or image, the artifact includes `src/`, `vendor/` and, if you
 deliberately keep it, `files/`):
 
-- Runtime `nodejs22.x`, handler `src/lambda.handler`; dependencies installed
+- Runtime `nodejs22.x`, handler `src/lambda.handler`. Dependencies installed
   (`@aws-sdk/client-dynamodb` is Lambda-only — it never enters the Worker bundle).
 - Trigger: **Function URL** (auth NONE) or API Gateway HTTP API (payload v2) —
   `hono/aws-lambda` supports both. The CDK stack uses an HTTP API
   (`ANY /` + `ANY /{proxy+}`).
 - Secrets via env vars: `XID_JWT_SECRET`, `XID_REDIRECT_ALLOWLIST`,
   `XID_CORS_ORIGINS`, `XID_RSA_PRIVATE_JWK` (ephemeral dev pair if missing).
-- IP rate limit uses `x-forwarded-for` (Function URL/API GW); on Cloudflare it
+- IP rate limit uses `x-forwarded-for` (Function URL/API GW). On Cloudflare it
   is still `cf-connecting-ip`.
 - Files and login assets are served from the FS (`XID_FILES_ROOT`,
   `vendor/cui/`): there is no `XID_FILES` binding on Lambda.
 
 ## Storage: KV bindings (`XID_*`)
 
-Four KV namespaces on the Worker (`wrangler.toml`); each one is optional — if the
+Four KV namespaces on the Worker (`wrangler.toml`). Each one is optional — if the
 binding is absent the file/memory adapter applies instead (detection: binding
 exists and has `.get`).
 
 | Binding | Contents | TTL | Local fallback (no binding) |
 | --- | --- | --- | --- |
 | `XID_META` | Ephemeral **session state**, prefixed keys: `otp:<email>` (pending code hash + attempts), `sess:<jti>` (logout denylist, checked on every token verification), `cognito-refresh:*` / Entra `refresh`+`code` (single use with rotation), `rl:*` rate-limit counters | 5 min – 30 d | In-memory `Map` (lost on restart / `--hot` reload) |
-| `XID_USERS` | Allowlist, key = normalized email, value = `{passwordHash, otpKeyHash}` (bootstrapped from `xusers.txt`) | — | `xusers.txt` (FS) |
+| `XID_USERS` | Allowlist, key = normalized email, value = `{passwordHash, otpKeyHash, role}` (bootstrapped from `xusers.txt`) | — | `xusers.txt` (FS) |
 | `XID_CLIENTS` | Machine clients for B2B, **secret hashes only** (from `xclients.txt`) | — | `xclients.txt` (FS) |
 | `XID_FILES` | File **contents** keyed by relative path: `cui/*` (login bundle) and `hide: 2` markdown articles | — | `vendor/cui/` and `XID_FILES_ROOT` (default `./files`) |
 
@@ -541,7 +607,7 @@ exists and has `.get`).
 > bodies.
 
 > `XID_META` is the only one needing real TTL semantics (rate limits, single-use
-> OTP/refresh, denylist); the other three are persistent configuration/content.
+> OTP/refresh, denylist). The other three are persistent configuration/content.
 > On **AWS Lambda** the same three bindings are backed by DynamoDB tables
 > (`xmeta`/`xusers`/`xclients`) — see the Lambda section above.
 
@@ -566,4 +632,4 @@ Considering the following:
 
 ## Status
 
-Implemented and verified locally (Bun + XIN): end-to-end OTP flow, JWT tokens, `/auth/me`, files (200/401/404/traversal 400), CORS, PUB build with `PUB_XID=1`. Reproducible smoke suite: `bun run smoke` (51 checks in-process, no ports). Deploy configuration still **pending** (Cloudflare Email, KV IDs, secrets).
+Implemented and verified locally (Bun + XIN): end-to-end OTP flow, JWT tokens, `/auth/me`, files (200/401/404/traversal 400), CORS, PUB build with `PUB_XID=1`. Reproducible smoke suite: `bun run smoke` (80 checks in-process, no ports). Deploy configuration still **pending** (Cloudflare Email, KV IDs, secrets).

@@ -31,7 +31,7 @@ function check(name, cond, extra = '') {
   }
 }
 
-async function call(method, p, { query = '', form = null, json = null, headers = {} } = {}) {
+async function call(method, p, { query = '', form = null, json = null, headers = {}, overrideEnv = null } = {}) {
   const h = { ...headers }
   let body
   if (form) {
@@ -41,7 +41,7 @@ async function call(method, p, { query = '', form = null, json = null, headers =
     h['Content-Type'] = 'application/json'
     body = JSON.stringify(json)
   }
-  const res = await app.fetch(new Request(ORIGIN + p + query, { method, headers: h, body }), env, {})
+  const res = await app.fetch(new Request(ORIGIN + p + query, { method, headers: h, body }), overrideEnv || env, {})
   const text = await res.text()
   let data = null
   try {
@@ -245,6 +245,7 @@ const dyn = createDynamoBindings({}, { client: fakeDynamoClient() })
 const usersMap = await parseTxt(fs.readFileSync(path.join(import.meta.dir, '..', 'xusers.txt'), 'utf-8'))
 for (const u of usersMap.values()) {
   const value = { email: u.email }
+  if (u.role) value.role = u.role
   if (u.passwordHash) value.passwordHash = u.passwordHash
   if (u.otpKeyHash) value.otpKeyHash = u.otpKeyHash
   await dyn.XID_USERS.put(u.email, JSON.stringify(value))
@@ -322,6 +323,201 @@ try {
 }
 check('xin down → console fallback (dev)', fb?.via === 'console', JSON.stringify(fb))
 globalThis.fetch = realFetch
+
+// ---- Admin API (users + clients) against temp txt fixtures ----
+{
+  const adminRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xid-admin-'))
+  const usersFile = path.join(adminRoot, 'xusers.txt')
+  const clientsFile = path.join(adminRoot, 'xclients.txt')
+  fs.writeFileSync(usersFile, '# fixture\nalice@example.com\nbob@example.com:$2b$10$abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0\n')
+  fs.writeFileSync(clientsFile, '# fixture\nsvc-demo:secret:files.read\n')
+  const adminEnv = {
+    ...env,
+    XID_ADMIN_API_KEY: 'admin-key',
+    XID_USERS_TXT: usersFile,
+    XID_CLIENTS_TXT: clientsFile,
+  }
+  const adminHeaders = { 'x-api-key': 'admin-key' }
+
+  let r = await call('GET', '/admin/users', { overrideEnv: { ...adminEnv, XID_ADMIN_API_KEY: '' } })
+  check('admin requires key or admin token', r.status === 401, `${r.status} ${r.text.slice(0, 60)}`)
+  r = await call('GET', '/admin/users', { overrideEnv: adminEnv, headers: { 'x-api-key': 'wrong' } })
+  check('admin wrong key 403', r.status === 403, `${r.status} ${r.text.slice(0, 60)}`)
+  r = await call('GET', '/admin/users', { overrideEnv: adminEnv, headers: adminHeaders })
+  check(
+    'admin users list',
+    r.status === 200 &&
+      r.json?.users?.some((u) => u.email === 'alice@example.com' && !u.passwordEnabled) &&
+      r.json?.users?.some((u) => u.email === 'bob@example.com' && u.passwordEnabled),
+    r.text.slice(0, 120)
+  )
+  check(
+    'admin users list defaults role user',
+    r.json?.users?.every((u) => u.role === 'user'),
+    r.text.slice(0, 120)
+  )
+  r = await call('POST', '/admin/users', { overrideEnv: adminEnv, headers: adminHeaders, json: { email: 'new@example.com' } })
+  check('admin user add', r.status === 201 && r.json?.email === 'new@example.com', r.text.slice(0, 80))
+  r = await call('POST', '/admin/users', { overrideEnv: adminEnv, headers: adminHeaders, json: { email: 'new@example.com' } })
+  check('admin user duplicate 409', r.status === 409, r.text.slice(0, 80))
+  r = await call('POST', '/admin/users', { overrideEnv: adminEnv, headers: adminHeaders, json: { email: 'nope' } })
+  check('admin user invalid 400', r.status === 400, r.text.slice(0, 80))
+  r = await call('DELETE', '/admin/users/new%40example.com', { overrideEnv: adminEnv, headers: adminHeaders })
+  check('admin user delete', r.status === 204, r.text.slice(0, 80))
+  r = await call('DELETE', '/admin/users/new%40example.com', { overrideEnv: adminEnv, headers: adminHeaders })
+  check('admin user delete missing 404', r.status === 404, r.text.slice(0, 80))
+  check('admin txt keeps comments', fs.readFileSync(usersFile, 'utf-8').startsWith('# fixture'), '')
+
+  r = await call('GET', '/admin/clients', { overrideEnv: adminEnv, headers: adminHeaders })
+  check('admin clients list', r.status === 200 && r.json?.clients?.some((x) => x.clientId === 'svc-demo'), r.text.slice(0, 100))
+  r = await call('POST', '/admin/clients', {
+    overrideEnv: adminEnv,
+    headers: adminHeaders,
+    json: { clientId: 'svc-ops', scopes: ['files.read'] },
+  })
+  check('admin client create returns secret once', r.status === 201 && !!r.json?.secret, r.text.slice(0, 100))
+  const createdSecret = r.json?.secret
+  r = await call('PUT', '/admin/clients/svc-ops', {
+    overrideEnv: adminEnv,
+    headers: adminHeaders,
+    json: { scopes: ['files.read', 'other.read'] },
+  })
+  check('admin client scopes update', r.status === 200 && r.json?.scopes?.length === 2, r.text.slice(0, 100))
+  r = await call('POST', '/admin/clients/svc-ops/rotate', { overrideEnv: adminEnv, headers: adminHeaders })
+  check(
+    'admin client rotate',
+    r.status === 200 && !!r.json?.secret && r.json.secret !== createdSecret,
+    r.text.slice(0, 100)
+  )
+  r = await call('GET', '/admin/clients', { overrideEnv: adminEnv, headers: adminHeaders })
+  check(
+    'admin client list has no secret',
+    r.status === 200 && !JSON.stringify(r.json).includes(createdSecret),
+    r.text.slice(0, 120)
+  )
+  r = await call('DELETE', '/admin/clients/svc-ops', { overrideEnv: adminEnv, headers: adminHeaders })
+  check('admin client delete', r.status === 204, r.text.slice(0, 80))
+  fs.rmSync(adminRoot, { recursive: true, force: true })
+}
+
+// ---- Roles: `[role]` tag in xusers.txt, token claims, admin API via Bearer ----
+{
+  const roleRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xid-roles-'))
+  const roleUsers = path.join(roleRoot, 'xusers.txt')
+  // Self-contained fixture: alice has a role tag, bob/carol do not (default user).
+  fs.writeFileSync(
+    roleUsers,
+    '# roles fixture\n[guest] alice@example.com\nbob@example.com:bobkey\ncarol@example.com:staticdev\n'
+  )
+  const roleEnv = { ...env, XID_ADMIN_API_KEY: 'admin-key', XID_USERS_TXT: roleUsers }
+  const adminHeaders = { 'x-api-key': 'admin-key' }
+
+  let r = await call('GET', '/admin/users', { overrideEnv: roleEnv, headers: adminHeaders })
+  check(
+    'roles default to user',
+    r.status === 200 && r.json?.users?.find((u) => u.email === 'carol@example.com')?.role === 'user',
+    r.text.slice(0, 100)
+  )
+  check(
+    '[role] tag sets the role (alice = guest)',
+    r.status === 200 && r.json?.users?.find((u) => u.email === 'alice@example.com')?.role === 'guest',
+    r.text.slice(0, 160)
+  )
+
+  r = await call('PUT', '/admin/users/carol%40example.com/role', {
+    overrideEnv: roleEnv,
+    headers: adminHeaders,
+    json: { role: 'admin' },
+  })
+  check('admin sets role admin', r.status === 200 && r.json?.role === 'admin', r.text.slice(0, 100))
+  const roleLines = fs.readFileSync(roleUsers, 'utf-8')
+  check(
+    'setRole rewrites the [role] tag and keeps the secret',
+    roleLines.includes('[admin] carol@example.com:staticdev'),
+    roleLines.slice(0, 160)
+  )
+
+  r = await call('PUT', '/admin/users/carol%40example.com/role', {
+    overrideEnv: roleEnv,
+    headers: adminHeaders,
+    json: { role: 'root' },
+  })
+  check('invalid role 400', r.status === 400, r.text.slice(0, 100))
+
+  r = await call('PUT', '/admin/users/nadie%40example.com/role', {
+    overrideEnv: roleEnv,
+    headers: adminHeaders,
+    json: { role: 'admin' },
+  })
+  check('role for missing user 404', r.status === 404, r.text.slice(0, 100))
+
+  // Carol logs in with her static key AFTER being promoted: token carries role.
+  r = await call('POST', '/auth/otp/start', { overrideEnv: roleEnv, json: { email: 'carol@example.com' } })
+  const carolSession = r.json?.Session
+  r = await call('POST', '/auth/otp/verify', {
+    overrideEnv: roleEnv,
+    json: { session: carolSession, email: 'carol@example.com', code: 'staticdev' },
+  })
+  const carolAT = r.json?.AuthenticationResult?.AccessToken
+  const carolClaims = carolAT ? JSON.parse(Buffer.from(carolAT.split('.')[1], 'base64url').toString()) : null
+  check('access token carries role claim', carolClaims?.role === 'admin' && carolClaims?.roles?.[0] === 'admin', JSON.stringify(carolClaims))
+
+  // Admin API accepts a Bearer token from a current admin (no x-api-key).
+  r = await call('GET', '/admin/users', { overrideEnv: roleEnv, headers: { Authorization: `Bearer ${carolAT}` } })
+  check('admin API accepts admin Bearer', r.status === 200, `${r.status} ${r.text.slice(0, 100)}`)
+
+  // Bob stays 'user' and gets 403 on the admin API.
+  r = await call('POST', '/auth/otp/start', {
+    overrideEnv: roleEnv,
+    json: { email: 'bob@example.com' },
+  })
+  const bobSession = r.json?.Session
+  r = await call('POST', '/auth/otp/verify', {
+    overrideEnv: roleEnv,
+    json: { session: bobSession, email: 'bob@example.com', code: 'bobkey' },
+  })
+  const bobAT = r.json?.AuthenticationResult?.AccessToken
+  r = await call('GET', '/admin/users', { overrideEnv: roleEnv, headers: { Authorization: `Bearer ${bobAT}` } })
+  check('admin API rejects user Bearer', r.status === 403, `${r.status} ${r.text.slice(0, 100)}`)
+
+  // /auth/me exposes the current role as a Cognito custom attribute.
+  r = await call('GET', '/auth/me', { overrideEnv: roleEnv, headers: { Authorization: `Bearer ${carolAT}` } })
+  check(
+    'auth/me exposes custom:role',
+    r.status === 200 && r.json?.UserAttributes?.some((a) => a.Name === 'custom:role' && a.Value === 'admin'),
+    r.text.slice(0, 120)
+  )
+
+  // owner (level 2): a valid role with its own claim, still no admin API.
+  r = await call('PUT', '/admin/users/bob%40example.com/role', {
+    overrideEnv: roleEnv,
+    headers: adminHeaders,
+    json: { role: 'owner' },
+  })
+  check('admin sets role owner', r.status === 200 && r.json?.role === 'owner', r.text.slice(0, 100))
+
+  r = await call('POST', '/auth/otp/start', {
+    overrideEnv: roleEnv,
+    json: { email: 'bob@example.com' },
+  })
+  const bobOwnerSession = r.json?.Session
+  r = await call('POST', '/auth/otp/verify', {
+    overrideEnv: roleEnv,
+    json: { session: bobOwnerSession, email: 'bob@example.com', code: 'bobkey' },
+  })
+  const bobOwnerAT = r.json?.AuthenticationResult?.AccessToken
+  const bobOwnerClaims = bobOwnerAT ? JSON.parse(Buffer.from(bobOwnerAT.split('.')[1], 'base64url').toString()) : null
+  check(
+    'owner token carries role claim',
+    bobOwnerClaims?.role === 'owner' && bobOwnerClaims?.roles?.[0] === 'owner',
+    JSON.stringify(bobOwnerClaims)
+  )
+
+  r = await call('GET', '/admin/users', { overrideEnv: roleEnv, headers: { Authorization: `Bearer ${bobOwnerAT}` } })
+  check('admin API rejects owner Bearer', r.status === 403, `${r.status} ${r.text.slice(0, 100)}`)
+
+  fs.rmSync(roleRoot, { recursive: true, force: true })
+}
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)
