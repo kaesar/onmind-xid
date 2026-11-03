@@ -10,7 +10,8 @@
     "cf:deploy": "wrangler deploy",
     "kv:bootstrap": "bun scripts/bootstrap-kv.js",
     "kv:dynamo": "bun scripts/bootstrap-dynamo.js",
-    "smoke": "bun scripts/smoke.js",
+    "test": "bun test/smoke.js",
+    "smoke": "bun test/smoke.js",
     "cli": "bun cli/xid.js"
   },
   "dependencies": {

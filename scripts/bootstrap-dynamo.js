@@ -12,10 +12,10 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import dynamodb from '@aws-sdk/client-dynamodb' // CJS: default import (Bun cannot resolve named)
 const { DynamoDBClient, CreateTableCommand, DescribeTableCommand, UpdateTimeToLiveCommand } = dynamodb
-import { createDynamoBindings, resolveTableNames } from '../src/dynamo.js'
-import { parseTxt as parseUsers } from '../src/users.js'
-import { parseTxt as parseClients } from '../src/clients.js'
-import { defaultRole } from '../src/roles.js'
+import { createDynamoBindings, resolveTableNames } from '../src/store/dynamo.js'
+import { parseTxt as parseUsers } from '../src/service/users.js'
+import { parseTxt as parseClients } from '../src/service/clients.js'
+import { defaultRole } from '../src/service/roles.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const args = process.argv.slice(2)

@@ -1,12 +1,12 @@
-// Assets públicos (sin auth) para las páginas de login: bundle OnMind-CUI (cui/).
+// Public assets (no auth) for the login pages: OnMind-CUI bundle (cui/).
 //   - Local: vendor/cui/
-//   - Worker: KV XID_FILES con key `cui/<file>` (misma KV de ficheros).
+//   - Worker: KV XID_FILES with key `cui/<file>` (same file KV).
 
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const vendorRoot = path.resolve(__dirname, '..', 'vendor', 'cui')
+const vendorRoot = path.resolve(__dirname, '..', '..', 'vendor', 'cui')
 
 const CONTENT_TYPES = { '.js': 'text/javascript; charset=utf-8' }
 

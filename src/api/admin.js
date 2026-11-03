@@ -18,9 +18,9 @@
 //   POST   /admin/clients/:clientId/rotate
 //   DELETE /admin/clients/:clientId
 
-import { constantTimeEqual, sha256Hex } from './util.js'
-import { getRole, getUser, setRole } from './users.js'
-import { verifyAccessToken } from './session.js'
+import { constantTimeEqual, sha256Hex } from '../util/common.js'
+import { getRole, getUser, setRole } from '../service/users.js'
+import { verifyAccessToken } from '../auth/session.js'
 import {
   addAdminUser,
   createAdminClient,
@@ -30,7 +30,7 @@ import {
   removeAdminUser,
   rotateAdminClientSecret,
   updateAdminClientScopes,
-} from './actions.js'
+} from '../service/actions.js'
 
 function error(c, message, status, extra = {}) {
   return c.json({ message, ...extra }, status)

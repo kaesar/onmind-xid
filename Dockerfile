@@ -1,6 +1,6 @@
-# OnMind-XID en contenedor (escenario VMs, alternativa a Cloudflare Worker).
-# Sin KV: usa adaptadores FS (xusers.txt/xclients.txt, XID_FILES_ROOT) y
-# memoria para OTP/rate-limit/códigos. Pensado para 1 réplica (ver README).
+# OnMind-XID in a container (VM scenario, alternative to Cloudflare Worker).
+# Without KV: uses FS adapters (xusers.txt/xclients.txt, XID_FILES_ROOT) and
+# memory for OTP/rate-limit/codes. Intended for 1 replica (see README).
 FROM oven/bun:1-slim
 
 WORKDIR /app

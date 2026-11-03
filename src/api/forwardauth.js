@@ -4,11 +4,11 @@
 //   401                     -> API clients (no redirect)
 //   302 to /login (or XID_LOGIN_URL) -> browsers, with ?next=<path>
 
-import { verifyAccessToken } from './session.js'
-import { getUser } from './users.js'
-import { defaultRole, isValidRole } from './roles.js'
-import { cookieValue } from './cookies.js'
-import { safeNext } from './util.js'
+import { verifyAccessToken } from '../auth/session.js'
+import { getUser } from '../service/users.js'
+import { defaultRole, isValidRole } from '../service/roles.js'
+import { cookieValue } from '../auth/cookies.js'
+import { safeNext } from '../util/common.js'
 
 function bearerToken(request) {
   const header = request?.headers?.get('authorization') || ''

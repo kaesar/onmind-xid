@@ -2,7 +2,7 @@
 // Forms are plain POSTs (no JS required); the CUI bundle is progressive
 // enhancement, with a native fallback when it fails to load.
 
-import { maskEmail } from './util.js'
+import { maskEmail } from '../util/common.js'
 import { cuiUrl } from './assets.js'
 
 // ---------------- strings (English default, Spanish) ----------------

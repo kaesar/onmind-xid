@@ -1,14 +1,14 @@
 #!/usr/bin/env bun
 // Bootstrap: xclients.txt → KV XID_CLIENTS (one-shot, hashes only).
-// Uso:
+// Usage:
 //   bun scripts/bootstrap-clients.js --apply
-// Sin --apply imprime las entradas que se escribirían (sin secretos).
-// Los secretos en claro NUNCA se suben: solo { secretHash, scopes }.
+// Without --apply it prints the entries that would be written (no secrets).
+// Clear-text secrets are NEVER uploaded: only { secretHash, scopes }.
 
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { parseTxt } from '../src/clients.js'
+import { parseTxt } from '../src/service/clients.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const txtPath = path.resolve(process.env.XID_CLIENTS_TXT || path.join(__dirname, '..', 'xclients.txt'))
@@ -31,7 +31,7 @@ if (!apply) {
   for (const entry of entries) {
     console.log(`${entry.key} scopes=[${entry.scopes.join(',')}] → ${entry.value.slice(0, 80)}...`)
   }
-  console.log(`\n${entries.length} clientes. Ejecuta con --apply para escribir en KV (hashes, sin secretos).`)
+  console.log(`\n${entries.length} clients. Run with --apply to write to KV (hashes, no secrets).`)
   process.exit(0)
 }
 
@@ -42,4 +42,4 @@ for (const entry of entries) {
     { stdio: 'inherit' }
   )
 }
-console.log(`\nEscritos ${entries.length} clientes en KV XID_CLIENTS (hashes).`)
+console.log(`\nWrote ${entries.length} clients to KV XID_CLIENTS (hashes).`)

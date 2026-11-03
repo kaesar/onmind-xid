@@ -1,8 +1,8 @@
-import { getUser } from './users.js'
-import { getRole } from './users.js'
-import { issueTokenSet, consumeRefreshToken, revokeUserRefreshTokens, denyJti, verifyAccessToken } from './session.js'
-import { beginLogin, finishLogin, hasSecret, checkLoginRateLimit } from './loginflow.js'
-import { maskEmail, normalizeEmail } from './util.js'
+import { getUser } from '../service/users.js'
+import { getRole } from '../service/users.js'
+import { issueTokenSet, consumeRefreshToken, revokeUserRefreshTokens, denyJti, verifyAccessToken } from '../auth/session.js'
+import { beginLogin, finishLogin, hasSecret, checkLoginRateLimit } from '../auth/loginflow.js'
+import { maskEmail, normalizeEmail } from '../util/common.js'
 import {
   getClient,
   verifyClientSecret,
@@ -12,7 +12,7 @@ import {
   ipOf as m2mIpOf,
   parseBasicAuth,
   issueMachineToken,
-} from './clients.js'
+} from '../service/clients.js'
 
 // Cognito Identity Provider subset + REST aliases (see xid/PLAN.md).
 // Contract: handlers return either the success JSON payload or
@@ -71,7 +71,7 @@ export async function initiateAuth(env, ctx, body) {
     CODE_DELIVERY_DELIVERYMEDIUM: 'EMAIL',
     CODE_DELIVERY_DESTINATION: maskEmail(started.email),
   }
-  if (started.mode === 'password') params.PASSWORD_ENABLED = 'true'
+  if (started.user?.passwordHash) params.PASSWORD_ENABLED = 'true'
   return { ChallengeName: 'EMAIL_OTP', Session: started.session, ChallengeParameters: params }
 }
 

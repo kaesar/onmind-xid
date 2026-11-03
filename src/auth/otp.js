@@ -1,9 +1,9 @@
 import net from 'node:net'
-import { constantTimeEqual, generateOtp, sha256Hex } from './util.js'
-import { kvDelete, kvGet, kvPut } from './kv.js'
+import { constantTimeEqual, generateOtp, sha256Hex } from '../util/common.js'
+import { kvDelete, kvGet, kvPut } from '../store/kv.js'
 
-// OTP de 6 dígitos, un solo uso, TTL ~5 min, máx 5 intentos.
-// En KV o en memoria (adapter kv.js). El código nunca viaja en el Session JWT.
+// 6-digit OTP, single use, TTL ~5 min, max 5 attempts.
+// In KV or memory (kv.js adapter). The code never travels in the Session JWT.
 
 const OTP_TTL = 300 // s
 const MAX_ATTEMPTS = 5
@@ -21,12 +21,12 @@ export async function clearOtp(env, email) {
   await kvDelete(env, otpKey(email))
 }
 
-// Verifica un código contra el OTP almacenado o contra el key estático del usuario.
-// Devuelve true solo en acierto (un solo uso, borra el OTP) o false si falla.
+// Verifies a code against the stored OTP or the user's static key.
+// Returns true only on success (single use, clears the OTP) or false on failure.
 export async function verifyOtp(env, email, code, user) {
   if (!code || typeof code !== 'string') return false
 
-  // Key estático dev: hash en tiempo constante, sin gastar OTP ni intentos.
+  // Dev static key: constant-time hash, without consuming OTP or attempts.
   if (user?.otpKeyHash) {
     const keyHash = await sha256Hex(code.trim())
     if (constantTimeEqual(keyHash, user.otpKeyHash)) return true

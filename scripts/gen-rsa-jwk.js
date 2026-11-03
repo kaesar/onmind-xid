@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
-// Genera un par RSA-2048 y emite la JWK privada (con kid) para XID_RSA_PRIVATE_JWK.
-// Uso:
+// Generates an RSA-2048 key pair and emits the private JWK (with kid) for XID_RSA_PRIVATE_JWK.
+// Usage:
 //   bun scripts/gen-rsa-jwk.js [--kid xid-1]
-// Guarda la salida como secreto: `npx wrangler secret put XID_RSA_PRIVATE_JWK < jwk.json`
-// (nunca en wrangler.toml ni en git).
+// Save the output as a secret: `npx wrangler secret put XID_RSA_PRIVATE_JWK < jwk.json`
+// (never in wrangler.toml or git).
 
 const kidArg = process.argv.indexOf('--kid')
 const kid = kidArg >= 0 && process.argv[kidArg + 1] ? process.argv[kidArg + 1] : 'xid-1'

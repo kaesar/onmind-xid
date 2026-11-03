@@ -1,12 +1,12 @@
 import path from 'node:path'
-import { verifyAccessToken } from './session.js'
-import { verifyRs256 } from './entra-keys.js'
-import { kvGet } from './kv.js'
-import { getUser } from './users.js'
-import { getClient, FILES_READ_SCOPE } from './clients.js'
+import { verifyAccessToken } from '../auth/session.js'
+import { verifyRs256 } from '../auth/keys.js'
+import { kvGet } from '../store/kv.js'
+import { getUser } from '../service/users.js'
+import { getClient, FILES_READ_SCOPE } from '../service/clients.js'
 
-// GET autenticado de ficheros de artículos hide:2.
-// Auth: Bearer o cookie `xid_session`. Path seguro (rechaza .., absolutos, \).
+// Authenticated GET of hide:2 article files.
+// Auth: Bearer or `xid_session` cookie. Safe path (rejects .., absolute, \).
 
 let fsMod = null
 async function lazyFs() {
@@ -71,14 +71,14 @@ export async function getFileContent(env, request, rawPath) {
   }
 }
 
-// Acepta access tokens de ambas fachadas: HS256 (Cognito) y RS256 (Entra).
-// En ambos casos sub = email y se respeta la denylist de logout (sess:jti).
+// Accepts access tokens from both facades: HS256 (Cognito) and RS256 (Entra).
+// In both cases sub = email and the logout denylist is honored (sess:jti).
 async function verifyAnyAccessToken(env, token) {
   try {
     const hs = await verifyAccessToken(env, token)
     if (hs) return hs
   } catch {
-    // sin secreto HMAC válido: intenta RS256 igualmente
+    // no valid HMAC secret: try RS256 anyway
   }
   const rs = await verifyRs256(env, token)
   if (!rs || rs.sub == null) return null
@@ -86,8 +86,8 @@ async function verifyAnyAccessToken(env, token) {
   return rs
 }
 
-// B2B: cliente máquina registrado cuyo token porta el scope files.read.
-// El token máquina se distingue por client_id === sub (sin identidad de usuario).
+// B2B: registered machine client whose token carries the files.read scope.
+// Machine tokens are distinguished by client_id === sub (no user identity).
 function tokenScopes(payload) {
   const raw = payload.scp || payload.scope || ''
   return String(raw).split(/[\s,]+/).map((s) => s.trim()).filter(Boolean)

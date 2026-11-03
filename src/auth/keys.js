@@ -1,7 +1,7 @@
-// Claves RS256 para la fachada Entra ID (simulación OIDC).
-// - Producción: secreto XID_RSA_PRIVATE_JWK (JWK privada JSON con kid, alg RS256).
-// - Dev: si falta, se genera un par efímero en memoria (igual que XID_JWT_SECRET en dev.js).
-// Solo usa WebCrypto (Bun + Workers), sin dependencias.
+// RS256 keys for the Entra ID facade (OIDC simulation).
+// - Production: XID_RSA_PRIVATE_JWK secret (private JSON JWK with kid, alg RS256).
+// - Dev: if missing, an ephemeral pair is generated in memory (same as XID_JWT_SECRET in dev.js).
+// Uses only WebCrypto (Bun + Workers), no dependencies.
 
 let cachedPrivateJwk = null
 let cachedPrivateKey = null
@@ -66,10 +66,10 @@ export async function ensureRsaKeys(env) {
       cachedPublicKey = await importPublicJwk(jwk)
       return cachedPrivateJwk
     } catch (err) {
-      throw new Error(`XID_RSA_PRIVATE_JWK inválido: ${err.message}`)
+      throw new Error(`Invalid XID_RSA_PRIVATE_JWK: ${err.message}`)
     }
   }
-  // Dev efímero (aviso una vez, como el secreto HMAC en dev.js).
+  // Ephemeral dev (warn once, like the HMAC secret in dev.js).
   const pair = await crypto.subtle.generateKey(
     {
       name: 'RSASSA-PKCS1-v1_5',
@@ -92,7 +92,7 @@ export async function ensureRsaKeys(env) {
   cachedPublicKey = pair.publicKey
   if (!warnedEphemeral) {
     warnedEphemeral = true
-    console.log('[xid:entra] sin XID_RSA_PRIVATE_JWK: usando par RSA efímero (dev). Fija el secreto en prod.')
+    console.log('[xid:entra] XID_RSA_PRIVATE_JWK not set: using an ephemeral RSA key pair (dev). Set the secret in production.')
   }
   return cachedPrivateJwk
 }

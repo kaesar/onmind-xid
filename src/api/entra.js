@@ -2,9 +2,9 @@
 // Alternative to cognito.js for the same scenario: email OTP against the allowlist.
 // Login orchestration lives in loginflow.js (shared with Cognito); here only
 // HTML form rendering and auth code/token issuance.
-// Reutiliza: loginflow (pasos begin/finish), users, session, kv, entra-keys.
+// Reuses: loginflow (begin/finish steps), users, session, kv, keys.
 //
-// Endpoints (tenant = path param; 'common'/'organizations'/'consumers' → tid configurado):
+// Endpoints (tenant = path param; 'common'/'organizations'/'consumers' → configured tid):
 //   GET  /.well-known/openid-configuration
 //   GET  /{tenant}/v2.0/.well-known/openid-configuration
 //   GET  /{tenant}/oauth2/v2.0/authorize (+ POST forms OTP)
@@ -13,20 +13,20 @@
 //   GET  /{tenant}/openid/userinfo
 //   GET  /{tenant}/oauth2/v2.0/logout
 //
-// Desviaciones documentadas vs Entra real:
+// Documented deviations from real Entra:
 //   - sub = email (stable); plus oid = sha256(email), tid, preferred_username.
 //   - interactive = public clients (no secret); B2B = client_credentials with
 //     secret (registry xclients.txt / KV XID_CLIENTS, sub = client_id, no id_token).
 //   - PKCE S256 optional but verified when the authorize request sent it.
-//   - Sin SAML/WS-Fed ni device_code.
+//   - No SAML/WS-Fed or device_code.
 
-import { kvGet, kvPut, kvDelete } from './kv.js'
-import { getUser } from './users.js'
-import { beginLogin, finishLogin } from './loginflow.js'
-import { verifyAccessToken, denyJti } from './session.js'
-import { getRole } from './users.js'
-import { normalizeEmail, isValidEmail, maskEmail, sha256Hex, readBodyParams } from './util.js'
-import { signRs256, verifyRs256, getPublicJwk } from './entra-keys.js'
+import { kvGet, kvPut, kvDelete } from '../store/kv.js'
+import { getUser } from '../service/users.js'
+import { beginLogin, finishLogin } from '../auth/loginflow.js'
+import { verifyAccessToken, denyJti } from '../auth/session.js'
+import { getRole } from '../service/users.js'
+import { normalizeEmail, isValidEmail, maskEmail, sha256Hex, readBodyParams } from '../util/common.js'
+import { signRs256, verifyRs256, getPublicJwk } from '../auth/keys.js'
 import { esc, pageShell, emailForm, codeForm, passwordForm, pickLang, t } from './ui.js'
 import {
   getClient,
@@ -37,7 +37,7 @@ import {
   ipOf,
   parseBasicAuth,
   issueMachineToken,
-} from './clients.js'
+} from '../service/clients.js'
 
 const AUTH_CODE_TTL = 600 // s (10 min, single use)
 const REFRESH_TTL = 86400 // s (24 h, rotated on every use)
@@ -85,7 +85,7 @@ export function isRedirectAllowed(env, uri) {
   }
   if (u.protocol !== 'http:' && u.protocol !== 'https:') return false
   const list = redirectAllowlist(env)
-  if (!list.length) return !isProd(env) // dev: abierto; prod: exigir allowlist
+  if (!list.length) return !isProd(env) // dev: open; prod: require allowlist
   return list.some((entry) => {
     if (entry.endsWith('*')) return uri.startsWith(entry.slice(0, -1))
     return uri === entry
@@ -451,7 +451,7 @@ export async function handleToken(c, tenantRaw) {
       access_token: issued.token,
     })
   }
-  return c.json({ error: 'unsupported_grant_type', error_description: 'usa authorization_code, refresh_token o client_credentials' }, 400)
+  return c.json({ error: 'unsupported_grant_type', error_description: 'use authorization_code, refresh_token or client_credentials' }, 400)
 }
 
 async function bearerPayload(env, request) {
@@ -519,7 +519,7 @@ export async function handleLogout(c, tenantRaw) {
   return c.html(pageShell(t(lang, 'logged_out'), `<h1>${esc(t(lang, 'logged_out'))}</h1><p class="muted">${esc(t(lang, 'session_revoked'))}</p>`, env, lang))
 }
 
-// ---------------- registro ----------------
+// ---------------- registration ----------------
 
 export function registerEntra(app) {
   app.get('/.well-known/openid-configuration', (c) =>

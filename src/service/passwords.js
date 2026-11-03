@@ -1,11 +1,11 @@
-// Passwords reales (bcrypt, formato compatible TinyAuth `$2b$`) para el segundo
-// dato de xusers.txt. WebCrypto no tiene bcrypt y `Bun.password` no existe en
-// Workers: bcryptjs (JS puro) es la única vía común a Bun + Workers.
-// El hash incluye salt y costo; la CLI hashea al guardar (el txt nunca lleva
-// claro si se usa el CLI). Legado `email:key` en claro → SHA-256 (users.js).
+// Real passwords (bcrypt, TinyAuth `$2b$` compatible format) for the second
+// field of xusers.txt. WebCrypto has no bcrypt and `Bun.password` does not exist
+// in Workers: bcryptjs (pure JS) is the only path common to Bun + Workers.
+// The hash includes salt and cost; the CLI hashes on save (the txt never holds
+// a clear password when the CLI is used). Legacy `email:key` in clear → SHA-256 (users.js).
 
 import bcrypt from 'bcryptjs'
-import { kvIncr } from './kv.js'
+import { kvIncr } from '../store/kv.js'
 
 export const BCRYPT_COST = 10
 const PW_RATE_MAX = 10
@@ -28,7 +28,7 @@ export async function verifyPassword(password, hash) {
   }
 }
 
-// Freno anti-adivinanza online (además del costo bcrypt): 10 intentos / 15 min.
+// Online anti-guessing brake (in addition to the bcrypt cost): 10 attempts / 15 min.
 export async function checkPasswordRateLimit(env, email) {
   const count = await kvIncr(env, `rl:pw:${email}`, PW_RATE_WINDOW)
   return count <= PW_RATE_MAX

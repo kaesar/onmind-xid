@@ -146,6 +146,48 @@ flowchart TD
 
 > `hide: 1` currently has **no** gate in `AsAccess` (only `=== 2`). The MVP doesn't invent new semantics for `hide: 1`: the sidebar already hides it. The SSG body stays public. Follow-up if the same gate is wanted.
 
+### Source layout
+
+```text
+  ______
+./ xid /
+/ src /
+├── index.js            # Hono app: routes, CORS, Worker entrypoint
+├── dev.js              # Bun entrypoint (Bun.serve)
+├── lambda.js           # AWS Lambda entrypoint
+├── api/                # HTTP facades and pages
+│   ├── admin.js        # /admin/* (users, clients, roles)
+│   ├── assets.js       # public CUI bundle (/cui/*)
+│   ├── cognito.js      # Cognito subset (/auth/*, POST /)
+│   ├── entra.js        # Entra ID / OIDC facade
+│   ├── files.js        # /v1/files + /files/*
+│   ├── forwardauth.js  # /auth/forward (Caddy forward_auth)
+│   ├── login.js        # GET/POST /login (HTML login page)
+│   └── ui.js           # shared HTML forms (Entra + login)
+├── auth/               # tokens, login flow, OTP, cookies
+│   ├── cookies.js      # xid_session cookie helpers
+│   ├── keys.js         # RS256 key + JWKS
+│   ├── loginflow.js    # beginLogin/finishLogin + shared rate limit
+│   ├── otp.js          # OTP codes
+│   └── session.js      # access/id tokens, refresh, OTP session
+├── service/            # identity domain and outbound services
+│   ├── actions.js      # admin mutations (users/clients)
+│   ├── clients.js      # B2B clients-apps + machine tokens
+│   ├── mail.js         # mail transports (CF / XIN / SMTP / console)
+│   ├── passwords.js    # bcrypt + password rate limit
+│   ├── roles.js        # role vocabulary and ranks
+│   └── users.js        # allowlist (txt/KV/Dynamo)
+├── store/              # persistence adapters
+│   ├── dynamo.js       # DynamoDB
+│   └── kv.js           # KV / FS / in-memory
+└── util/
+    └── common.js       # email, hashing, base64, next, form parsing
+```
+
+Only `src/index.js`, `src/dev.js` and `src/lambda.js` stay at the root, so
+`wrangler.toml` (`main`), the CDK handler (`src/lambda.handler`) and the Docker
+command (`src/dev.js`) do not change.
+
 ---
 
 ## Requirements
@@ -310,7 +352,7 @@ Each role is a **level** on a single ordered scale. The level is inspired in the
 
 > **Access level:** `guest (0) < user (1) < owner (2) < admin (3)`...
 
-The ranks live in `src/roles.js` (`ROLES`, `ROLE_RANK`) and a higher level implies the lower ones.  
+The ranks live in `src/service/roles.js` (`ROLES`, `ROLE_RANK`) and a higher level implies the lower ones.
 In PUB today only `hide: 1` and `hide: 2` exist (`hide: 0` = public, `hide: 3` is reserved for admin-only content). `/admin/*` is the only server-side gate in XID and it requires `admin`. The other levels are claims hat downstream services (PUB, APIs) can enforce.
 
 ```txt
@@ -377,7 +419,7 @@ Notes:
 ## B2B machine-to-machine (`client_credentials`, `client_id`-managed)
 
 Pure service-to-service without users or OTP, on both facades over one shared registry
-(`src/clients.js`): local `xclients.txt` with rows `client_id:client_secret:scope1,scope2`
+(`src/service/clients.js`): local `xclients.txt` with rows `client_id:client_secret:scope1,scope2`
 (see `xclients.txt.example`), KV `XID_CLIENTS` in prod (**hashes only**, never plaintext secrets).
 
 ```bash
@@ -464,15 +506,17 @@ except `--gen`/OTP-only defaults. For prod, run the bootstrap scripts after
 | `XID_COOKIE_DOMAIN` | optional `Domain` for `xid_session` (e.g. `.example.com`), so subdomains share the session. Host-only when unset |
 | `XID_LOGIN_URL` | optional override for the login page used by `/auth/forward`; defaults to the built-in `/login`. Point it at the app's own page (e.g. PUB `/access`) if you prefer |
 
-## Reverse proxy (Caddy)
+## Reverse proxy (Caddy / Traefik)
 
-`GET /auth/forward` is a forward-auth endpoint for Caddy's `forward_auth`.
-It validates the
-`xid_session` cookie or a `Bearer` token and returns `200` with the identity
-headers `Remote-User`, `Remote-Email`, `Remote-Name`, `Remote-Role` and
-`Remote-Groups`. API clients without a session get `401`; browsers
-(`Accept: text/html`) are redirected to `XID_LOGIN_URL?next=<original path>`,
-which defaults to the built-in `/login` page.
+`GET /auth/forward` is a forward-auth endpoint for reverse proxies. It
+validates the `xid_session` cookie or a `Bearer` token and returns `200` with
+the identity headers `Remote-User`, `Remote-Email`, `Remote-Name`,
+`Remote-Role` and `Remote-Groups`. API clients without a session get `401`;
+browsers (`Accept: text/html`) are redirected to
+`XID_LOGIN_URL?next=<original path>`, which defaults to the built-in `/login`
+page.
+
+### Caddy
 
 ```caddyfile
 example.com {
@@ -491,6 +535,49 @@ example.com {
 }
 ```
 
+### Traefik
+
+```yaml
+http:
+  routers:
+    xid:
+      rule: >-
+        Host(`example.com`) &&
+        (PathPrefix(`/auth/`) || Path(`/login`) || PathPrefix(`/cui/`) ||
+         PathPrefix(`/v1/`) || PathPrefix(`/oauth2/`) || PathPrefix(`/admin/`) ||
+         Path(`/health`))
+      priority: 100
+      service: xid
+
+    app:
+      rule: "Host(`example.com`)"
+      priority: 10
+      service: app
+      middlewares:
+        - xid-auth
+
+  middlewares:
+    xid-auth:
+      forwardAuth:
+        address: "http://xid:8787/auth/forward"
+        authResponseHeaders:
+          - Remote-User
+          - Remote-Email
+          - Remote-Name
+          - Remote-Role
+          - Remote-Groups
+
+  services:
+    xid:
+      loadBalancer:
+        servers:
+          - url: "http://xid:8787"
+    app:
+      loadBalancer:
+        servers:
+          - url: "http://app:8080"
+```
+
 ```bash
 XID_COOKIE_DOMAIN=.example.com   # optional, for subdomains
 # XID_LOGIN_URL=https://app.example.com/access   # optional app login page
@@ -504,13 +591,23 @@ Notes:
 - `Remote-User` and `Remote-Email` carry the full email; `Remote-Role` and
   `Remote-Groups` carry the XID role (`admin|owner|user|guest`).
 - To use the app's own login page instead (e.g. PUB `/access`), set
-  `XID_LOGIN_URL` and exclude that route from `forward_auth`; otherwise it
+  `XID_LOGIN_URL` and exclude that route from forward-auth; otherwise it
   redirects to itself in a loop.
 - `xid_session` is host-only by default. Setting `XID_COOKIE_DOMAIN` to the
   parent domain (e.g. `.example.com`) shares it across subdomains. If the login
   page lives on a different subdomain than XID, call XID with
   `credentials: 'include'` (CORS allows credentials for `XID_CORS_ORIGINS`).
-- Keep the backend reachable **only** through Caddy. Otherwise a client can
+- Caddy: `copy_headers` is the equivalent of Traefik's `authResponseHeaders`.
+- Traefik: `address` includes the path (`/auth/forward`), unlike Caddy's
+  `uri`. Keep `preserveRequestMethod` unset/`false` so Traefik calls
+  `GET /auth/forward`; with `true`, the endpoint would need to accept all
+  methods.
+- Traefik: if you set `authRequestHeaders` to filter, keep `Cookie`, `Accept`
+  and `Authorization`. `trustForwardHeader` is optional; when enabled,
+  configure `forwardedHeaders.trustedIPs` at the entryPoint.
+  `addAuthCookiesToResponse` is not needed: `/auth/forward` does not set
+  cookies, and `/login` has its own router.
+- Keep the backend reachable **only** through the proxy. Otherwise a client can
   send `Remote-*` headers itself.
 
 ## Cloudflare deploy (summary)
@@ -586,7 +683,7 @@ Notes: the image defaults to `XID_ENV=production` with FS paths under `/data`
 ## AWS Lambda + DynamoDB (alternative to Cloudflare)
 
 Same Hono app served by **AWS Lambda** (Node.js ≥ 20) with **DynamoDB** backing
-the three KV bindings. `src/dynamo.js` implements the *same duck-typed interface*
+the three KV bindings. `src/store/dynamo.js` implements the *same duck-typed interface*
 as the Cloudflare KV binding (`get`/`get|json`/`put{expirationTtl}`/`delete`), so
 `kv.js` / `users.js` / `clients.js` stay untouched — runtime detection is just
 "binding exists or not".

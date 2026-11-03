@@ -1,12 +1,12 @@
 import { Hono } from 'hono'
-import { initiateAuth, respondToAuthChallenge, getUserOp, globalSignOut, signUpStub, oauthToken } from './cognito.js'
-import { getFileContent } from './files.js'
-import { getAsset } from './assets.js'
-import { registerEntra, handleJwks } from './entra.js'
-import { registerAdmin } from './admin.js'
-import { handleForwardAuth } from './forwardauth.js'
-import { handleLoginGet, handleLoginPost } from './login.js'
-import { sessionCookie } from './cookies.js'
+import { initiateAuth, respondToAuthChallenge, getUserOp, globalSignOut, signUpStub, oauthToken } from './api/cognito.js'
+import { getFileContent } from './api/files.js'
+import { getAsset } from './api/assets.js'
+import { registerEntra, handleJwks } from './api/entra.js'
+import { registerAdmin } from './api/admin.js'
+import { handleForwardAuth } from './api/forwardauth.js'
+import { handleLoginGet, handleLoginPost } from './api/login.js'
+import { sessionCookie } from './auth/cookies.js'
 
 const app = new Hono()
 
@@ -52,7 +52,7 @@ app.get('/health', (c) => {
   return c.json({ ok: true, env: env.XID_ENV || process.env.XID_ENV || 'dev' })
 })
 
-// Raíz informativa (evita 404 al abrir http://localhost:8787 en el navegador).
+// Informational root (avoids 404 when opening http://localhost:8787 in a browser).
 app.get('/', (c) => {
   const env = c.env || {}
   return c.json({
@@ -80,7 +80,7 @@ app.get('/', (c) => {
   })
 })
 
-// ---------------- Adaptadores de contexto ----------------
+// ---------------- Context adapters ----------------
 function ctxOf(c) {
   return { request: c.req.raw, env: c.env }
 }
@@ -122,7 +122,7 @@ app.post('/', async (c) => {
   return callAuth(c, fn)
 })
 
-// ---------------- Alias REST ----------------
+// ---------------- REST aliases ----------------
 app.post('/cognito/:op', async (c) => {
   const fn = OP_INDEX[c.req.param('op')]
   if (!fn) return c.json({ __type: 'UnknownOperationException', message: 'Unknown operation' }, 400)
@@ -160,22 +160,22 @@ app.post('/auth/otp/verify', (c) =>
   })
 )
 
-// JWKS de los access/id tokens RS256 (Cognito y Entra comparten clave).
+// JWKS for the RS256 access/id tokens (Cognito and Entra share the key).
 app.get('/auth/.well-known/jwks.json', (c) => handleJwks(c))
 
-// Página de login HTML (OTP / password) para navegadores y forward-auth.
+// HTML login page (OTP / password) for browsers and forward-auth.
 app.get('/login', handleLoginGet)
 app.post('/login', handleLoginPost)
 
-// Forward auth para proxies (Caddy `forward_auth`).
+// Forward auth for proxies (Caddy `forward_auth`).
 app.get('/auth/forward', handleForwardAuth)
 
 app.get('/auth/me', (c) => callAuth(c, (env, ctx) => getUserOp(env, ctx, {})))
 
 app.post('/auth/logout', (c) => callAuth(c, (env, ctx, body) => globalSignOut(env, ctx, tolerantBody(body))))
 
-// Refresh Cognito (AuthFlow REFRESH_TOKEN_AUTH): { refreshToken } →
-// AuthenticationResult nuevo (Access + Id + Refresh rotado, un solo uso).
+// Cognito refresh (AuthFlow REFRESH_TOKEN_AUTH): { refreshToken } →
+// new AuthenticationResult (Access + Id + rotated Refresh, single use).
 app.post('/auth/refresh', (c) =>
   callAuth(c, async (env, ctx, body) => {
     const b = tolerantBody(body)
@@ -188,10 +188,10 @@ app.post('/auth/refresh', (c) =>
   })
 )
 
-// ---------------- OAuth hosted-UI style (B2B client_credentials, forma Cognito) ----------------
+// ---------------- OAuth hosted-UI style (B2B client_credentials, Cognito shape) ----------------
 app.post('/oauth2/token', (c) => oauthToken(c))
 
-// ---------------- Ficheros (Iteration 2) ----------------
+// ---------------- Files (Iteration 2) ----------------
 async function sendFile(c, rel) {
   const res = await getFileContent(c.env, c.req.raw, rel)
   if (res.status !== 200) return c.json(res.body, res.status)
@@ -209,7 +209,7 @@ app.get('/v1/files', (c) => {
 
 app.get('/files/*', (c) => sendFile(c, c.req.path.replace(/^\/files\//, '')))
 
-// ---------------- Assets públicos del login (bundle CUI, sin auth) ----------------
+// ---------------- Public login assets (CUI bundle, no auth) ----------------
 app.get('/cui/*', async (c) => {
   const res = await getAsset(c.env, c.req.path.replace(/^\//, ''))
   if (res.status !== 200) return c.text(res.body, res.status)
@@ -222,7 +222,7 @@ app.get('/cui/*', async (c) => {
 // ---------------- Admin API (users + clients, x-api-key) ----------------
 registerAdmin(app)
 
-// ---------------- Fachada Entra ID (simulación OIDC sobre el mismo core) ----------------
+// ---------------- Entra ID facade (OIDC simulation over the same core) ----------------
 registerEntra(app)
 
 // ---------------- Error handling ----------------

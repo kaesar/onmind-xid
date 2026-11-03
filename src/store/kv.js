@@ -1,5 +1,5 @@
-// KV adapter: namespace XID_META (Cloudflare) o Map in-memory (dev `bun run dev`).
-// Los valores se guardan como strings JSON, igual que en Cloudflare KV.
+// KV adapter: namespace XID_META (Cloudflare) or in-memory Map (dev `bun run dev`).
+// Values are stored as JSON strings, same as Cloudflare KV.
 
 const mem = new Map() // key -> { value, expiresAt }
 
@@ -46,7 +46,7 @@ export async function kvDelete(env, key) {
   mem.delete(key)
 }
 
-// Incremento read-modify-write (no atómico en KV; suficiente para rate limit del MVP).
+// Read-modify-write increment (not atomic on KV; enough for the MVP rate limit).
 export async function kvIncr(env, key, ttlSec) {
   const prev = (await kvGet(env, key)) || { count: 0, resetAt: 0 }
   const count = (prev.count || 0) + 1

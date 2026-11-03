@@ -11,12 +11,12 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { sha256Hex, constantTimeEqual } from './util.js'
-import { kvGet, kvPut, kvIncr } from './kv.js'
-import { signRs256 } from './entra-keys.js'
+import { sha256Hex, constantTimeEqual } from '../util/common.js'
+import { kvGet, kvPut, kvIncr } from '../store/kv.js'
+import { signRs256 } from '../auth/keys.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const defaultsTxtPath = path.resolve(__dirname, '..', 'xclients.txt')
+const defaultsTxtPath = path.resolve(__dirname, '..', '..', 'xclients.txt')
 
 export const FILES_READ_SCOPE = 'files.read'
 export const MACHINE_TOKEN_TTL = 3600 // s (1 h, same as user tokens)

@@ -11,7 +11,7 @@
 
 import { handle } from 'hono/aws-lambda'
 import { app } from './index.js'
-import { createDynamoBindings } from './dynamo.js'
+import { createDynamoBindings } from './store/dynamo.js'
 
 const env = {
   ...process.env,

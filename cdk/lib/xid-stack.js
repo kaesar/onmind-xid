@@ -70,7 +70,7 @@ class XidStack extends cdk.Stack {
     const pitr = ctxBool(this, 'pointInTimeRecovery', true)
 
     // ---------- DynamoDB ----------
-    // Schema must match src/dynamo.js + scripts/bootstrap-dynamo.js:
+    // Schema must match src/store/dynamo.js + scripts/bootstrap-dynamo.js:
     // pk (S) = key, v (S) = value, ttl (N) = optional epoch seconds (xmeta only).
     const table = (short, { ttl = false } = {}) =>
       new dynamodb.Table(this, `${short}Table`, {
@@ -149,6 +149,7 @@ class XidStack extends cdk.Stack {
           '.github',
           '.wrangler',
           'cdk', // this CDK app + its node_modules
+          'test', // test suite, not needed at runtime
           'PLAN.md',
           'xusers.txt', // never ship local secrets in the package
           'xclients.txt',

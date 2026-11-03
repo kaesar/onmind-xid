@@ -12,7 +12,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { isValidEmail, normalizeEmail } from './util.js'
+import { isValidEmail, normalizeEmail } from '../util/common.js'
 import {
   hashSecret,
   isValidClientId,
@@ -23,8 +23,8 @@ import { defaultRole } from './roles.js'
 import { listUsers, parseUserLine } from './users.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const defaultUsersPath = path.resolve(__dirname, '..', 'xusers.txt')
-const defaultClientsPath = path.resolve(__dirname, '..', 'xclients.txt')
+const defaultUsersPath = path.resolve(__dirname, '..', '..', 'xusers.txt')
+const defaultClientsPath = path.resolve(__dirname, '..', '..', 'xclients.txt')
 
 function usersPath(env) {
   const configured = env?.XID_USERS_TXT || process.env.XID_USERS_TXT

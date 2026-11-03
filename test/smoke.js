@@ -2,10 +2,10 @@
 // In-process e2e smoke test (no ports, no network): exercises app.fetch directly.
 // Uses the dev fixtures xusers.txt (bob: password abc123, carol: static key)
 // and xclients.txt (svc-demo / svc-noscope). Sends no mail (SMTP disabled).
-// Usage: bun scripts/smoke.js   (exit != 0 if anything fails)
+// Usage: bun test/smoke.js   (exit != 0 if anything fails)
 
 import { app } from '../src/index.js'
-import { signToken } from '../src/session.js'
+import { signToken } from '../src/auth/session.js'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -74,6 +74,11 @@ try {
   // ---- Cognito: real password (bob, bcrypt) ----
   r = await call('POST', '/auth/otp/start', { json: { email: 'bob@example.com' } })
   check('cognito start', r.status === 200 && r.json?.ChallengeName === 'EMAIL_OTP', r.text.slice(0, 80))
+  check(
+    'cognito otp start advertises password login',
+    r.json?.ChallengeParameters?.PASSWORD_ENABLED === 'true',
+    r.text.slice(0, 120)
+  )
   const sess = r.json?.Session
   r = await call('POST', '/cognito/RespondToAuthChallenge', {
     json: { Session: sess, ChallengeResponses: { USERNAME: 'bob@example.com', PASSWORD: 'abc123' } },
@@ -310,9 +315,9 @@ try {
 }
 
 // ---- DynamoDB adapter (same duck-typed interface as the Cloudflare KV) ----
-const { DynamoKV, createDynamoBindings } = await import('../src/dynamo.js')
-const { beginLogin } = await import('../src/loginflow.js')
-const { parseTxt } = await import('../src/users.js')
+const { DynamoKV, createDynamoBindings } = await import('../src/store/dynamo.js')
+const { beginLogin } = await import('../src/auth/loginflow.js')
+const { parseTxt } = await import('../src/service/users.js')
 
 function fakeDynamoClient() {
   const tables = new Map()
@@ -397,7 +402,7 @@ check(
 )
 
 // ---- mail via XIN over HTTP (XID_XIN_URL): stubbed fetch, no network ----
-const { sendMail, xinSend } = await import('../src/mail.js')
+const { sendMail, xinSend } = await import('../src/service/mail.js')
 const realFetch = globalThis.fetch
 let seen = null
 globalThis.fetch = async (url, opts) => {

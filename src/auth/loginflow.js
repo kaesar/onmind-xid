@@ -6,19 +6,19 @@
 // beginLogin passwordRequested:
 //   true      → password only, no mail (password_disabled error if no hash)
 //   false     → OTP with mail, unless legacy (static key, no mail)
-//   undefined → auto: password si hay hash, legacy si hay key, OTP resto
+//   undefined → auto: password if a hash exists, legacy if a key exists, OTP otherwise
 // Note: legacy + passwordRequested=false sends no mail (the static key is enough).
 // If mail sending fails (no SES/SMTP in prod, e.g. Lambda) →
 // reason 'mail_unavailable' with passwordEnabled (whether the user has a hash).
 
-import { getUser } from './users.js'
+import { getUser } from '../service/users.js'
 import { issueOtpSession, verifyOtpSession } from './session.js'
 import { startOtp, verifyOtp, otpAttemptsLeft, clearOtp } from './otp.js'
-import { verifyPassword, checkPasswordRateLimit } from './passwords.js'
-import { sendMail, makeOtpMessage } from './mail.js'
-import { kvIncr } from './kv.js'
-import { ipOf } from './clients.js'
-import { normalizeEmail, sleep } from './util.js'
+import { verifyPassword, checkPasswordRateLimit } from '../service/passwords.js'
+import { sendMail, makeOtpMessage } from '../service/mail.js'
+import { kvIncr } from '../store/kv.js'
+import { ipOf } from '../service/clients.js'
+import { normalizeEmail, sleep } from '../util/common.js'
 
 const hasSecret = (v) => v !== undefined && v !== null && v !== ''
 

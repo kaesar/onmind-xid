@@ -1,6 +1,6 @@
-// Entrypoint de desarrollo local (Bun).
-// Uso: `bun src/dev.js` (hot reload nativo: reusa el socket). Escucha en PORT || 8787.
-// No exporta default `{ fetch }`, así Bun no auto-sirve en 3000: hay un solo servidor.
+// Local development entrypoint (Bun).
+// Usage: `bun src/dev.js` (native hot reload: reuses the socket). Listens on PORT || 8787.
+// Does not export a default `{ fetch }`, so Bun does not auto-serve on 3000: there is a single server.
 import { app } from './index.js'
 
 const port = Number(process.env.PORT || 8787)
@@ -15,5 +15,5 @@ console.log(`[xid] listening on http://localhost:${port}`)
 const server = Bun.serve({
   port,
   fetch: (request) => app.fetch(request, envDev, { waitUntil: () => {} }),
-  development: true, // hot reload: reusa el socket; no cierra el puerto entre recargas
+  development: true, // hot reload: reuses the socket; does not close the port between reloads
 })

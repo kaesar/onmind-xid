@@ -7,11 +7,11 @@
 // POST /login                     → start login: OTP code form or password form
 // POST /login (code|password)     → verify, set the cookie, redirect to next
 
-import { issueTokens, verifyAccessToken } from './session.js'
-import { beginLogin, finishLogin, checkLoginRateLimit } from './loginflow.js'
+import { issueTokens, verifyAccessToken } from '../auth/session.js'
+import { beginLogin, finishLogin, checkLoginRateLimit } from '../auth/loginflow.js'
 import { emailForm, codeForm, passwordForm, pickLang, t, esc, pageShell } from './ui.js'
-import { cookieValue, sessionCookie } from './cookies.js'
-import { normalizeEmail, isValidEmail, maskEmail, safeNext, readBodyParams } from './util.js'
+import { cookieValue, sessionCookie } from '../auth/cookies.js'
+import { normalizeEmail, isValidEmail, maskEmail, safeNext, readBodyParams } from '../util/common.js'
 
 const clientIdFrom = (env) => env?.XID_CLIENT_ID || process.env.XID_CLIENT_ID || 'pub-xid'
 

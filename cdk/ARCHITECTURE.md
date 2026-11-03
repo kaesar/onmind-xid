@@ -9,7 +9,7 @@ Infrastructure as code for running XID on AWS:
   `src/lambda.handler`, packaged as a **repo-root asset** (no bundler).
 - **DynamoDB (on-demand)** — three single-key tables that implement the same
   duck-typed KV interface as the CF Worker bindings:
-  `xusers`, `xclients`, `xmeta` (see `src/dynamo.js`).
+  `xusers`, `xclients`, `xmeta` (see `src/store/dynamo.js`).
 
 > CDK app is plain **JavaScript** (CJS, no TypeScript): `bin/app.js` +
 > `lib/xid-stack.js`. Node ≥ 20 required.
@@ -69,7 +69,7 @@ ApiEndpoint  https://xxxxxxxx.execute-api.<region>.amazonaws.com
    env = Lambda environment + the three `DynamoKV` bindings built by
    `createDynamoBindings()`.
 3. Reads/writes go to DynamoDB (`pk` / `v` / optional `ttl`); OTP and refresh
-   sessions expire via TTL **and** on-read validation (`src/dynamo.js`).
+   sessions expire via TTL **and** on-read validation (`src/store/dynamo.js`).
 
 ## Configuration reference
 
@@ -136,7 +136,7 @@ Notes:
   `-c removalPolicy=destroy -c deletionProtection=false -c pointInTimeRecovery=false`
   so everything is disposable.
 - Schema (`pk` S, `v` S, optional `ttl` N) is shared by CDK,
-  `scripts/bootstrap-dynamo.js` and `src/dynamo.js` — change all three together.
+  `scripts/bootstrap-dynamo.js` and `src/store/dynamo.js` — change all three together.
 
 ## Deploy (real AWS)
 
@@ -209,7 +209,7 @@ cd cdk && npx cdk destroy -y
 
 `localEndpoint` is what makes the Lambda inside Floci reach Floci's DynamoDB:
 it sets `AWS_ENDPOINT_URL` (global SDK v3 override) **and**
-`XID_DYNAMO_ENDPOINT` (used directly by `src/dynamo.js`). On real AWS you
+`XID_DYNAMO_ENDPOINT` (used directly by `src/store/dynamo.js`). On real AWS you
 leave `localEndpoint` empty and the SDK talks to `dynamodb.<region>.amazonaws.com`.
 
 A second, lighter test path (no CDK): run only the storage layer against Floci —

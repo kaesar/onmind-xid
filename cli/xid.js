@@ -21,9 +21,9 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomBytes } from 'node:crypto'
 import * as p from '@clack/prompts'
-import { hashPassword } from '../src/passwords.js'
-import { defaultRole, ROLES } from '../src/roles.js'
-import { formatUserLine, parseUserLine, setRole } from '../src/users.js'
+import { hashPassword } from '../src/service/passwords.js'
+import { defaultRole, ROLES } from '../src/service/roles.js'
+import { formatUserLine, parseUserLine, setRole } from '../src/service/users.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const root = path.resolve(__dirname, '..')
@@ -56,8 +56,8 @@ function resolveFile(flag, envKey, def) {
 function readLines(file) {
   if (!fs.existsSync(file)) return []
   const lines = fs.readFileSync(file, 'utf-8').split('\n')
-  // El '\n' final del archivo genera un elemento '' fantasma al partir;
-  // sin quitarlo, cada inserción deja una línea en blanco intermedia.
+  // The file's trailing '\n' creates a phantom '' element when splitting;
+  // without removing it, every insertion leaves an intermediate blank line.
   while (lines.length && lines[lines.length - 1] === '') lines.pop()
   return lines
 }

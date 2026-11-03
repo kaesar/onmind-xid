@@ -1,15 +1,15 @@
 #!/usr/bin/env bun
 // Bootstrap: xusers.txt → KV XID_USERS (one-shot).
-// Uso:
+// Usage:
 //   bun scripts/bootstrap-kv.js --apply [--include-dev-keys]
-// Sin --apply imprime las entradas que se escribirían. `--include-dev-keys` sube
-// también los `otpKeyHash` de dev (NO recomendado en producción: son claves estáticas).
+// Without --apply it prints the entries that would be written. `--include-dev-keys` also
+// uploads the `otpKeyHash` dev keys (NOT recommended in production: they are static keys).
 
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { parseTxt } from '../src/users.js'
-import { defaultRole } from '../src/roles.js'
+import { parseTxt } from '../src/service/users.js'
+import { defaultRole } from '../src/service/roles.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const txtPath = path.resolve(process.env.XID_USERS_TXT || path.join(__dirname, '..', 'xusers.txt'))
@@ -26,7 +26,7 @@ const users = await parseTxt(fs.readFileSync(txtPath, 'utf-8'), process.env)
 const entries = []
 for (const user of users.values()) {
   const value = { email: user.email, role: user.role || defaultRole(process.env) }
-  if (user.passwordHash) value.passwordHash = user.passwordHash // bcrypt: verificador legítimo, siempre se sube
+  if (user.passwordHash) value.passwordHash = user.passwordHash // bcrypt: legitimate verifier, always uploaded
   if (includeDevKeys && user.otpKeyHash) value.otpKeyHash = user.otpKeyHash
   entries.push({ key: user.email, value: JSON.stringify(value), email: user.email })
 }
@@ -35,11 +35,11 @@ if (!apply) {
   for (const entry of entries) {
     console.log(`${entry.key} → ${entry.value}`)
   }
-  console.log(`\n${entries.length} usuarios. Ejecuta con --apply para escribir en KV.`)
+  console.log(`\n${entries.length} users. Run with --apply to write to KV.`)
   process.exit(0)
 }
 
-// usa `wrangler kv key put --binding=XID_USERS` con mensaje plano
+// uses `wrangler kv key put --binding=XID_USERS` with a plain message
 const { execSync } = await import('node:child_process')
 for (const entry of entries) {
   execSync(
@@ -47,4 +47,4 @@ for (const entry of entries) {
     { stdio: 'inherit' }
   )
 }
-console.log(`\nEscritos ${entries.length} usuarios en KV XID_USERS.`)
+console.log(`\nWrote ${entries.length} users to KV XID_USERS.`)

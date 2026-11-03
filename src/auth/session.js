@@ -1,13 +1,13 @@
 import { createRequire } from 'node:module'
-import { base64UrlDecode, base64urlEncode, constantTimeEqual } from './util.js'
-import { kvDelete, kvGet, kvPut } from './kv.js'
-import { getRole } from './users.js'
-import { signRs256, verifyRs256 } from './entra-keys.js'
+import { base64UrlDecode, base64urlEncode, constantTimeEqual } from '../util/common.js'
+import { kvDelete, kvGet, kvPut } from '../store/kv.js'
+import { getRole } from '../service/users.js'
+import { signRs256, verifyRs256 } from './keys.js'
 
 const require = createRequire(import.meta.url)
 
-// JWT sin librerías (crypto.subtle): access/id RS256 con JWKS, sesión OTP HMAC.
-// RS256 usa XID_RSA_PRIVATE_JWK; XID_JWT_SECRET solo firma la sesión OTP.
+// JWT without libraries (crypto.subtle): access/id RS256 with JWKS, OTP session HMAC.
+// RS256 uses XID_RSA_PRIVATE_JWK; XID_JWT_SECRET only signs the OTP session.
 
 const ISS = 'xid'
 const ACCESS_TTL = 3600 // s (~1 h)
@@ -143,8 +143,8 @@ export async function verifyOtpSession(env, session) {
   return payload
 }
 
-// Verifica un access token (firma + expiración + denylist) y devuelve payload.
-// RS256 es el formato actual; se acepta HS256 para tokens emitidos antes de v1.
+// Verifies an access token (signature + expiry + denylist) and returns the payload.
+// RS256 is the current format; HS256 is accepted for tokens issued before v1.
 export async function verifyAccessToken(env, token) {
   const rs = await verifyRs256(env, token)
   if (rs) {
@@ -171,9 +171,9 @@ export async function denyJti(env, jti, expSec) {
   await kvPut(env, `sess:${jti}`, '1', ttl)
 }
 
-// ---------------- Refresh tokens (fachada Cognito) ----------------
-// Opacos (256 bits), un solo uso con rotación en cada uso, TTL deslizante.
-// Índice por usuario para revocarlos todos en GlobalSignOut (best-effort).
+// ---------------- Refresh tokens (Cognito facade) ----------------
+// Opaque (256 bits), single use with rotation on every use, sliding TTL.
+// Per-user index so GlobalSignOut can revoke them all (best-effort).
 
 const REFRESH_TOKEN_TTL = 30 * 86400 // 30 d
 const MAX_REFRESH_PER_USER = 20
@@ -196,12 +196,12 @@ export async function issueRefreshToken(env, email, clientId) {
     idx.push(token)
     await kvPut(env, refreshIndexKey(email), idx.slice(-MAX_REFRESH_PER_USER), REFRESH_TOKEN_TTL)
   } catch {
-    // best-effort: el token individual ya quedó guardado
+    // best-effort: the individual token was already stored
   }
   return token
 }
 
-// Un solo uso: devuelve { email, clientId } o null (inexistente o ya usado).
+// Single use: returns { email, clientId } or null (missing or already used).
 export async function consumeRefreshToken(env, token) {
   if (!token || typeof token !== 'string') return null
   const rec = await kvGet(env, refreshKey(token))
@@ -225,16 +225,16 @@ export async function revokeUserRefreshTokens(env, email) {
       try {
         await kvDelete(env, refreshKey(t))
       } catch {
-        // best-effort por token
+        // best-effort per token
       }
     }
     await kvDelete(env, refreshIndexKey(email))
   } catch {
-    // best-effort: logout no debe fallar por esto
+    // best-effort: logout must not fail because of this
   }
 }
 
-// Triple completo Cognito: Access + Id + Refresh (con rotación en cada uso).
+// Full Cognito triple: Access + Id + Refresh (with rotation on every use).
 export async function issueTokenSet(env, email, clientId) {
   const base = await issueTokens(env, email, clientId)
   const refreshToken = await issueRefreshToken(env, email, clientId)
