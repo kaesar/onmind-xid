@@ -266,19 +266,55 @@ try {
   r = await call('POST', '/xid/oauth2/v2.0/token', {
     form: { grant_type: 'authorization_code', code, redirect_uri: OAUTH.redirect_uri, client_id: 'pub-xid', code_verifier: VERIFIER },
   })
-  check('token pkce', r.status === 200 && !!r.json?.access_token && !!r.json?.refresh_token, r.text.slice(0, 120))
+  check(
+    'token pkce',
+    r.status === 200 && !!r.json?.access_token && !!r.json?.refresh_token && !!r.json?.id_token,
+    r.text.slice(0, 120)
+  )
   const entraAT = r.json?.access_token
   const entraRT = r.json?.refresh_token
+  const entraID = r.json?.id_token
   r = await call('GET', '/xid/openid/userinfo', { headers: { Authorization: `Bearer ${entraAT}` } })
   check('userinfo', r.status === 200 && r.json?.sub === 'bob@example.com', r.text.slice(0, 80))
+  r = await call('GET', '/xid/openid/userinfo', { headers: { Authorization: `Bearer ${entraID}` } })
+  check('id token rejected by userinfo', r.status === 401, r.text.slice(0, 80))
+  r = await call('GET', '/v1/files', { query: '?path=docs/secret.md', headers: { Authorization: `Bearer ${entraID}` } })
+  check('id token rejected by files', r.status === 401, r.text.slice(0, 80))
   r = await call('POST', '/xid/oauth2/v2.0/token', {
     form: { grant_type: 'refresh_token', refresh_token: entraRT, client_id: 'pub-xid' },
   })
-  check('refresh rotates', r.status === 200 && r.json?.refresh_token !== entraRT, r.text.slice(0, 80))
+  const entraRT2 = r.json?.refresh_token
+  check('refresh rotates', r.status === 200 && entraRT2 !== entraRT, r.text.slice(0, 80))
   r = await call('POST', '/xid/oauth2/v2.0/token', {
     form: { grant_type: 'refresh_token', refresh_token: entraRT, client_id: 'pub-xid' },
   })
   check('refresh reuse 400', r.status === 400, r.text.slice(0, 80))
+  r = await call('POST', '/xid/oauth2/v2.0/token', {
+    form: { grant_type: 'refresh_token', refresh_token: entraRT2, client_id: 'pub-xid', scope: 'admin superscope' },
+  })
+  check('refresh scope escalation 400', r.status === 400 && r.json?.error === 'invalid_scope', r.text.slice(0, 120))
+  r = await call('POST', '/xid/oauth2/v2.0/token', {
+    form: { grant_type: 'refresh_token', refresh_token: entraRT2, client_id: 'pub-xid', scope: 'openid' },
+  })
+  check('refresh scope subset 200', r.status === 200 && !!r.json?.access_token, r.text.slice(0, 120))
+
+  // ---- OIDC origin: forwarded headers, else XID_PUBLIC_URL ----
+  r = await call('GET', '/xid/v2.0/.well-known/openid-configuration', {
+    headers: { 'X-Forwarded-Proto': 'https', 'X-Forwarded-Host': 'app.example.com' },
+  })
+  check(
+    'issuer uses forwarded headers',
+    r.status === 200 && r.json?.issuer === 'https://app.example.com/xid',
+    r.text.slice(0, 80)
+  )
+  r = await call('GET', '/xid/v2.0/.well-known/openid-configuration', {
+    overrideEnv: { ...env, XID_PUBLIC_URL: 'https://public.example.com' },
+  })
+  check(
+    'issuer uses XID_PUBLIC_URL',
+    r.status === 200 && r.json?.issuer === 'https://public.example.com/xid',
+    r.text.slice(0, 80)
+  )
 
   // ---- B2B client_credentials (both facades) ----
   r = await call('POST', '/xid/oauth2/v2.0/token', {
@@ -336,8 +372,14 @@ function fakeDynamoClient() {
         return {}
       }
       if (name === 'DeleteItemCommand') {
+        const old = table().get(i.Key.pk.S)
+        if (i.ConditionExpression && !old) {
+          const err = new Error('ConditionalCheckFailedException')
+          err.name = 'ConditionalCheckFailedException'
+          throw err
+        }
         table().delete(i.Key.pk.S)
-        return {}
+        return i.ReturnValues === 'ALL_OLD' && old ? { Attributes: old } : {}
       }
       throw new Error(`fake dynamo: unsupported command ${name}`)
     },
@@ -356,6 +398,12 @@ check('dynamo ttl expired → delete', !fake.tables.get('xmeta').has('k1'))
 await dkv.put('k2', 'v2')
 await dkv.delete('k2')
 check('dynamo delete', (await dkv.get('k2')) === null)
+await dkv.put('k3', '{"x":3}')
+check('dynamo consume returns value', (await dkv.consume('k3'))?.x === 3)
+check('dynamo consume is single use', (await dkv.consume('k3')) === null)
+await dkv.put('k4', '{"x":4}')
+const [c1, c2] = await Promise.all([dkv.consume('k4'), dkv.consume('k4')])
+check('dynamo consume is atomic', (c1?.x === 4) !== (c2?.x === 4), JSON.stringify([c1, c2]))
 
 // ---- e2e login with DynamoDB bindings (fake client, no AWS) ----
 const dyn = createDynamoBindings({}, { client: fakeDynamoClient() })
@@ -388,6 +436,16 @@ check(
   dr.status === 200 && !!dj?.AuthenticationResult?.AccessToken && !!dj?.AuthenticationResult?.RefreshToken,
   `${dr.status} ${JSON.stringify(dj).slice(0, 80)}`
 )
+const dynRefresh = dj?.AuthenticationResult?.RefreshToken
+dr = await dynFetch('/auth/refresh', { refreshToken: dynRefresh })
+dj = await dr.json()
+check(
+  'dynamo refresh consumes',
+  dr.status === 200 && !!dj?.AuthenticationResult?.AccessToken,
+  `${dr.status} ${JSON.stringify(dj).slice(0, 80)}`
+)
+dr = await dynFetch('/auth/refresh', { refreshToken: dynRefresh })
+check('dynamo refresh reuse 400', dr.status === 400, String(dr.status))
 dr = await dynFetch('/auth/otp/start', { email: 'bob@example.com', password: 'mala' })
 dj = await dr.json()
 dr = await dynFetch('/auth/otp/verify', { session: dj.Session, email: 'bob@example.com', password: 'mala' })

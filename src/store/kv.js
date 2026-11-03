@@ -13,16 +13,17 @@ function memRead(key) {
   return entry.value
 }
 
+function parseRaw(raw) {
+  if (raw === null || raw === undefined) return null
+  try { return JSON.parse(raw) } catch { return raw }
+}
+
 export async function kvGet(env, key) {
   const kv = env?.XID_META
   if (kv && typeof kv.get === 'function') {
-    const raw = await kv.get(key)
-    if (raw === null || raw === undefined) return null
-    try { return JSON.parse(raw) } catch { return raw }
+    return parseRaw(await kv.get(key))
   }
-  const raw = memRead(key)
-  if (raw === null || raw === undefined) return null
-  try { return JSON.parse(raw) } catch { return raw }
+  return parseRaw(memRead(key))
 }
 
 export async function kvPut(env, key, value, ttlSec) {
@@ -44,6 +45,23 @@ export async function kvDelete(env, key) {
     return kv.delete(key)
   }
   mem.delete(key)
+}
+
+// Atomic single-use (DynamoDB). Cloudflare KV has no atomic consume: best-effort,
+// so a concurrent replay may succeed; use a Durable Object for strict single-use.
+export async function kvConsume(env, key) {
+  const kv = env?.XID_META
+  if (kv && typeof kv.consume === 'function') return kv.consume(key)
+  if (kv && typeof kv.get === 'function') {
+    const raw = await kv.get(key)
+    if (raw === null || raw === undefined) return null
+    await kv.delete(key)
+    return parseRaw(raw)
+  }
+  const raw = memRead(key)
+  if (raw === null || raw === undefined) return null
+  mem.delete(key) // no await between read and delete
+  return parseRaw(raw)
 }
 
 // Read-modify-write increment (not atomic on KV; enough for the MVP rate limit).

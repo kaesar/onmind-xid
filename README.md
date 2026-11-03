@@ -1,8 +1,10 @@
 # OnMind-XID — eXpress IDentity for access
 
-> A simple alternative to **OnMind-UID** (another private project) designed mainly for [**OnMind-PUB**](https://github.com/kaesar/onmind-pub) and **Cloudflare** (containers and AWS Lambda as alternatives).
+> A simple **IdP** designed initially for [**OnMind-PUB**](https://github.com/kaesar/onmind-pub) and **Cloudflare** (containers and AWS Lambda as alternatives).
 
-This is an **IdP/IAM** for [**OnMind-PUB**](https://github.com/kaesar/onmind-pub). Thinked as worker (in **Hono**) with a **Cognito-compatible API** (subset, even **Entra ID compatible**) for **email OTP** authentication against an **allowlist**, plus an authenticated **file manager** for `hide: 2` articles. Besides could be used with WebApps, AI and machine to machine (M2M/B2B) for API's.
+This is a simple **IdP/IAM** for [**OnMind-PUB**](https://github.com/kaesar/onmind-pub) and more. It is my free and express alternative to **OnMind-UID** (another private project). Thinked as worker (in **Hono**) with a **Cognito-compatible API** (subset, even **Entra ID compatible**) for **email OTP** authentication against an **allowlist**, plus an authenticated **file manager** for `hide: 2` articles.
+
+Besides could be used with WebApps, AI and machine to machine (M2M/B2B) for API's...
 
 - Runs locally with **Bun** (for mail in dev use **[OnMind-XIN](https://github.com/kaesar/onmind-xin)**, sibling `../xin`, over SMTP).
 - Deploys as a **Cloudflare Worker** (and **Cloudflare Email Service** via the `send_email` binding).
@@ -503,6 +505,7 @@ except `--gen`/OTP-only defaults. For prod, run the bootstrap scripts after
 | `XID_RSA_PRIVATE_JWK` | RSA private JWK (`bun scripts/gen-rsa-jwk.js`) signing the access/id tokens of **both** façades; ephemeral in dev if missing, set it in production or tokens won't validate across instances |
 | `XID_TENANT_ID` | `tid` for `common`/`organizations`/`consumers` (default `xid`) |
 | `XID_REDIRECT_ALLOWLIST` | allowed `redirect_uri`/`post_logout_redirect_uri` (comma-separated, trailing `*` = prefix). Open in dev if empty, denied in prod |
+| `XID_PUBLIC_URL` | public origin used when the reverse proxy does not send `X-Forwarded-Proto` / `X-Forwarded-Host` (e.g. `https://id.example.com`); falls back to the request URL |
 | `XID_COOKIE_DOMAIN` | optional `Domain` for `xid_session` (e.g. `.example.com`), so subdomains share the session. Host-only when unset |
 | `XID_LOGIN_URL` | optional override for the login page used by `/auth/forward`; defaults to the built-in `/login`. Point it at the app's own page (e.g. PUB `/access`) if you prefer |
 
@@ -624,11 +627,17 @@ bun scripts/gen-rsa-jwk.js --kid xid-1 > jwk.json  # do NOT version
 npx wrangler secret put XID_RSA_PRIVATE_JWK < jwk.json && rm jwk.json
 npx wrangler secret put XID_MAIL_FROM
 npx wrangler secret put XID_CORS_ORIGINS
+npx wrangler secret put XID_REDIRECT_ALLOWLIST  # comma-separated redirect_uri values for Entra
 bun scripts/bootstrap-kv.js --apply            # xusers.txt: KV XID_USERS (without --include-dev-keys in prod)
 bun scripts/bootstrap-clients.js --apply       # xclients.txt: KV XID_CLIENTS (hashes only, never secrets)
 npx wrangler kv key put --binding=XID_FILES "cui/onmind-cui-v3.js" --path vendor/cui/onmind-cui-v3.js  # login bundle (public)
 npx wrangler deploy
 ```
+
+`wrangler.toml` sets `XID_ENV = "production"` for deploys; `bun run cf:dev`
+overrides it to `dev` for the local Worker. `XID_PUBLIC_URL` is optional on
+Cloudflare (the request URL is already public) but useful behind a proxy that
+does not forward `X-Forwarded-*`.
 
 Sending requirement: domain onboarded in **Cloudflare Email Service** (SPF/DKIM/DMARC) and a **Paid** Workers plan for arbitrary recipients.
 

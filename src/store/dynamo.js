@@ -82,6 +82,35 @@ export class DynamoKV {
     await this.client.send(new DeleteItemCommand({ TableName: this.tableName, Key: this.key(key) }))
   }
 
+  // Atomic single-use: delete only if the item exists and return the old value.
+  async consume(key) {
+    let res
+    try {
+      res = await this.client.send(
+        new DeleteItemCommand({
+          TableName: this.tableName,
+          Key: this.key(key),
+          ConditionExpression: 'attribute_exists(pk)',
+          ReturnValues: 'ALL_OLD',
+        })
+      )
+    } catch (err) {
+      if (err?.name === 'ConditionalCheckFailedException') return null
+      throw err
+    }
+    const item = res?.Attributes
+    if (!item) return null
+    const ttl = item.ttl?.N ? Number(item.ttl.N) : 0
+    if (ttl && ttl <= Math.floor(Date.now() / 1000)) return null
+    const raw = item.v?.S
+    if (raw === undefined || raw === null) return null
+    try {
+      return JSON.parse(raw)
+    } catch {
+      return raw
+    }
+  }
+
   // Minimal KV-compatible list used by the admin API (allowlist/client tables
   // are small). Scan + begins_with(pk, prefix), with cursor pagination.
   async list(opts = {}) {

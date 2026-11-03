@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "bun --hot src/dev.js",
     "start": "bun src/dev.js",
-    "cf:dev": "wrangler dev",
+    "cf:dev": "wrangler dev --var XID_ENV:dev",
     "cf:deploy": "wrangler deploy",
     "kv:bootstrap": "bun scripts/bootstrap-kv.js",
     "kv:dynamo": "bun scripts/bootstrap-dynamo.js",

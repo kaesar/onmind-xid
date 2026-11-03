@@ -1,9 +1,13 @@
 name = "onmind-xid"
 main = "src/index.js"
 compatibility_date = "2026-08-01"
+compatibility_flags = ["nodejs_compat"]
 
 [vars]
-XID_ENV = "dev"
+# Safe default for `wrangler deploy`; `bun run cf:dev` overrides it to dev.
+XID_ENV = "production"
+# Public origin used when the proxy does not send X-Forwarded-* headers.
+# XID_PUBLIC_URL = "https://id.example.com"
 
 # Cloudflare Email Service: env.MAIL.send({ to, from, subject, text })
 [[send_email]]

@@ -20,7 +20,7 @@
 //   - PKCE S256 optional but verified when the authorize request sent it.
 //   - No SAML/WS-Fed or device_code.
 
-import { kvGet, kvPut, kvDelete } from '../store/kv.js'
+import { kvGet, kvPut, kvConsume } from '../store/kv.js'
 import { getUser } from '../service/users.js'
 import { beginLogin, finishLogin } from '../auth/loginflow.js'
 import { verifyAccessToken, denyJti } from '../auth/session.js'
@@ -63,8 +63,21 @@ function effectiveTid(env, tenant) {
   return tenant
 }
 
-function originOf(request) {
-  return new URL(request.url).origin
+function originOf(request, env) {
+  const fwdHost = String(request.headers.get('x-forwarded-host') || '')
+    .split(',')[0]
+    .trim()
+  const fwdProto = String(request.headers.get('x-forwarded-proto') || '')
+    .split(',')[0]
+    .trim()
+  if (fwdHost || fwdProto) {
+    const url = new URL(request.url)
+    return `${fwdProto || url.protocol.replace(':', '')}://${fwdHost || url.host}`
+  }
+  const configured = String(env?.XID_PUBLIC_URL || process.env.XID_PUBLIC_URL || '')
+    .trim()
+    .replace(/\/+$/, '')
+  return configured || new URL(request.url).origin
 }
 
 function redirectAllowlist(env) {
@@ -132,12 +145,14 @@ async function issueEntraTokenSet(env, { email, clientId, scope, nonce, origin, 
 
   const access = await signRs256(env, {
     iss, aud: clientId, sub: email, oid, tid,
+    token_use: 'access',
     preferred_username: email, email, email_verified: true,
     role, roles: [role],
     scp, iat: now, exp, jti,
   })
   const idPayload = {
     iss, aud: clientId, sub: email, oid, tid,
+    token_use: 'id',
     preferred_username: email, email, email_verified: true,
     role, roles: [role],
     name: email.split('@')[0],
@@ -174,6 +189,16 @@ function discoveryDoc(origin, tenant) {
   }
 }
 
+// A requested scope is valid only if it is a subset of the scope already
+// granted to the code/refresh token; omitted scope keeps the stored one.
+function scopeSubset(bodyScope, storedScope) {
+  if (!bodyScope) return storedScope
+  const requested = parseScopes(bodyScope)
+  const allowed = parseScopes(storedScope)
+  if (!requested.length || !scopesAllowed(requested, allowed)) return null
+  return requested.join(' ')
+}
+
 function oauthPassthrough(query) {
   return {
     client_id: query.client_id || '',
@@ -203,7 +228,7 @@ function authorizeUrl(origin, tenant, oauth, overrides = {}) {
 
 export async function handleDiscovery(c, tenantRaw) {
   const tenant = cleanTenant(tenantRaw, c.env)
-  return c.json(discoveryDoc(originOf(c.req.raw), tenant))
+  return c.json(discoveryDoc(originOf(c.req.raw, c.env), tenant))
 }
 
 export async function handleJwks(c) {
@@ -237,7 +262,7 @@ export async function handleAuthorizePost(c, tenantRaw) {
   const body = await readBodyParams(c)
   const oauth = oauthPassthrough(body)
   const lang = pickLang(c.req.raw, oauth)
-  const origin = originOf(c.req.raw)
+  const origin = originOf(c.req.raw, env)
   const email = normalizeEmail(body.email)
   const code = typeof body.code === 'string' ? body.code.trim() : ''
   const password = typeof body.password === 'string' ? body.password : ''
@@ -368,21 +393,28 @@ export async function handleToken(c, tenantRaw) {
         return c.json({ error: 'invalid_grant', error_description: 'PKCE verification failed' }, 400)
       }
     }
+    const effectiveScope = scopeSubset(body.scope, stored.scope)
+    if (effectiveScope === null) {
+      return c.json({ error: 'invalid_scope', error_description: 'requested scope exceeds grant' }, 400)
+    }
     const user = await getUser(env, stored.email)
     if (!user) return c.json({ error: 'invalid_grant', error_description: 'user no longer authorized' }, 400)
-    await kvDelete(env, codeKey(body.code))
-    const origin = originOf(c.req.raw)
+    const consumed = await kvConsume(env, codeKey(body.code))
+    if (!consumed) {
+      return c.json({ error: 'invalid_grant', error_description: 'invalid or expired code' }, 400)
+    }
+    const origin = originOf(c.req.raw, env)
     const set = await issueEntraTokenSet(env, {
       email: stored.email,
       clientId: stored.clientId,
-      scope: body.scope || stored.scope,
+      scope: effectiveScope,
       nonce: stored.nonce,
       origin,
       tenant,
     })
     return c.json({
       token_type: 'Bearer',
-      scope: body.scope || stored.scope,
+      scope: effectiveScope,
       expires_in: ACCESS_TTL,
       access_token: set.access,
       id_token: set.id,
@@ -399,21 +431,28 @@ export async function handleToken(c, tenantRaw) {
     if (body.client_id && body.client_id !== stored.clientId) {
       return c.json({ error: 'invalid_grant', error_description: 'client_id mismatch' }, 400)
     }
+    const effectiveScope = scopeSubset(body.scope, stored.scope)
+    if (effectiveScope === null) {
+      return c.json({ error: 'invalid_scope', error_description: 'requested scope exceeds grant' }, 400)
+    }
     const user = await getUser(env, stored.email)
     if (!user) return c.json({ error: 'invalid_grant', error_description: 'user no longer authorized' }, 400)
-    await kvDelete(env, refreshKey(body.refresh_token)) // rotation
-    const origin = originOf(c.req.raw)
+    const consumed = await kvConsume(env, refreshKey(body.refresh_token))
+    if (!consumed) {
+      return c.json({ error: 'invalid_grant', error_description: 'invalid refresh_token' }, 400)
+    }
+    const origin = originOf(c.req.raw, env)
     const set = await issueEntraTokenSet(env, {
       email: stored.email,
       clientId: stored.clientId,
-      scope: body.scope || stored.scope,
+      scope: effectiveScope,
       nonce: null,
       origin,
       tenant,
     })
     return c.json({
       token_type: 'Bearer',
-      scope: body.scope || stored.scope,
+      scope: effectiveScope,
       expires_in: ACCESS_TTL,
       access_token: set.access,
       id_token: set.id,
@@ -437,7 +476,7 @@ export async function handleToken(c, tenantRaw) {
     if (body.scope && !scopesAllowed(requested, client.scopes)) {
       return c.json({ error: 'invalid_scope', error_description: 'requested scope exceeds grant' }, 400)
     }
-    const origin = originOf(c.req.raw)
+    const origin = originOf(c.req.raw, env)
     const issued = await issueMachineToken(env, {
       clientId: client.clientId,
       scope: requested.join(' '),
@@ -461,6 +500,9 @@ async function bearerPayload(env, request) {
   const token = m[1]
   const rs = await verifyRs256(env, token)
   if (rs) {
+    // Entra/machine tokens carry token_use; legacy access tokens have a jti,
+    // legacy ID tokens have neither and must not be accepted as access tokens.
+    if (rs.token_use !== 'access' && !(rs.token_use === undefined && rs.jti)) return null
     if (rs.jti && (await kvGet(env, `sess:${rs.jti}`))) return null // revoked via logout
     return rs
   }

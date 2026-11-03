@@ -1,10 +1,7 @@
-import { createRequire } from 'node:module'
 import { base64UrlDecode, base64urlEncode, constantTimeEqual } from '../util/common.js'
-import { kvDelete, kvGet, kvPut } from '../store/kv.js'
+import { kvConsume, kvDelete, kvGet, kvPut } from '../store/kv.js'
 import { getRole } from '../service/users.js'
 import { signRs256, verifyRs256 } from './keys.js'
-
-const require = createRequire(import.meta.url)
 
 // JWT without libraries (crypto.subtle): access/id RS256 with JWKS, OTP session HMAC.
 // RS256 uses XID_RSA_PRIVATE_JWK; XID_JWT_SECRET only signs the OTP session.
@@ -204,9 +201,8 @@ export async function issueRefreshToken(env, email, clientId) {
 // Single use: returns { email, clientId } or null (missing or already used).
 export async function consumeRefreshToken(env, token) {
   if (!token || typeof token !== 'string') return null
-  const rec = await kvGet(env, refreshKey(token))
+  const rec = await kvConsume(env, refreshKey(token))
   if (!rec || !rec.email) return null
-  await kvDelete(env, refreshKey(token))
   try {
     const idx = (await kvGet(env, refreshIndexKey(rec.email))) || []
     const rest = idx.filter((t) => t !== token)

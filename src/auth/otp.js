@@ -1,4 +1,3 @@
-import net from 'node:net'
 import { constantTimeEqual, generateOtp, sha256Hex } from '../util/common.js'
 import { kvDelete, kvGet, kvPut } from '../store/kv.js'
 

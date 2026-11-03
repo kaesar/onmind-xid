@@ -22,6 +22,8 @@
 //   corsOrigins      comma list → XID_CORS_ORIGINS
 //   redirectAllowlist comma list → XID_REDIRECT_ALLOWLIST
 //   tenantId/clientId → XID_TENANT_ID / XID_CLIENT_ID
+//   publicUrl        public origin → XID_PUBLIC_URL (used when the proxy does
+//                    not send X-Forwarded-Proto / X-Forwarded-Host)
 //   xinUrl           base URL of OnMind-XIN → XID_XIN_URL (OTP mail via
 //                    POST /send; the only mail transport that works on Lambda)
 //   xinApiKey        optional XIN key → XID_XIN_API_KEY. Prefer the
@@ -121,6 +123,8 @@ class XidStack extends cdk.Stack {
     if (tenantId) fnEnv.XID_TENANT_ID = tenantId
     const clientId = String(ctx(this, 'clientId', ''))
     if (clientId) fnEnv.XID_CLIENT_ID = clientId
+    const publicUrl = String(ctx(this, 'publicUrl', '') || process.env.XID_PUBLIC_URL || '').replace(/\/+$/, '')
+    if (publicUrl) fnEnv.XID_PUBLIC_URL = publicUrl
 
     // Mail via XIN over HTTP (works on Lambda; plain SMTP has no listener there
     // unless XIN runs as a container). Secret: prefer the env var.

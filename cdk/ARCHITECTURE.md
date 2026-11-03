@@ -89,14 +89,16 @@ All config is **CDK context** (defaults in `cdk/cdk.json`, override with
 | `corsOrigins`        | `""`           | comma list → `XID_CORS_ORIGINS`                     |
 | `redirectAllowlist`  | `""`           | comma list → `XID_REDIRECT_ALLOWLIST`               |
 | `tenantId` / `clientId` | `""`        | `XID_TENANT_ID` / `XID_CLIENT_ID` (Entra/Cognito)   |
+| `publicUrl`        | `""`           | public origin → `XID_PUBLIC_URL` (used when the proxy does not send `X-Forwarded-Proto` / `X-Forwarded-Host`; also reads `XID_PUBLIC_URL` env at synth) |
 | `xinUrl`           | `""`           | OnMind-XIN base URL → `XID_XIN_URL` (OTP mail via `POST /send`; also reads `XID_XIN_URL` env at synth) |
 | `xinApiKey`        | `""`           | optional XIN key → `XID_XIN_API_KEY`; prefer `export XID_XIN_API_KEY=...` (same secrecy caveat as `jwtSecret`) |
 | `localEndpoint`      | `""`           | emulator URL → `AWS_ENDPOINT_URL` + `XID_DYNAMO_ENDPOINT` inside the Lambda (Floci/LocalStack) |
 
 Lambda environment (set by the stack): `XID_ENV`, `XID_JWT_SECRET`,
 `XID_USERS_TABLE`, `XID_CLIENTS_TABLE`, `XID_META_TABLE`, plus the optional
-list vars above — `XID_RSA_PRIVATE_JWK` when `rsaPrivateJwk` is given, and
-`XID_XIN_URL` / `XID_XIN_API_KEY` when `xinUrl` / `xinApiKey` are given. Mail on Lambda goes through **XIN over HTTP**
+list vars above — `XID_RSA_PRIVATE_JWK` when `rsaPrivateJwk` is given,
+`XID_PUBLIC_URL` when `publicUrl` is given, and `XID_XIN_URL` /
+`XID_XIN_API_KEY` when `xinUrl` / `xinApiKey` are given. Mail on Lambda goes through **XIN over HTTP**
 (`POST /send`, no SMTP needed); without `xinUrl`, passwordless OTP fails fast
 with `400 mail_unavailable` and login stays password-only (bcrypt in `xusers`).
 

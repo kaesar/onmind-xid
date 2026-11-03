@@ -82,6 +82,9 @@ async function verifyAnyAccessToken(env, token) {
   }
   const rs = await verifyRs256(env, token)
   if (!rs || rs.sub == null) return null
+  // Entra/machine tokens carry token_use; legacy access tokens have a jti,
+  // legacy ID tokens have neither and must not be accepted as access tokens.
+  if (rs.token_use !== 'access' && !(rs.token_use === undefined && rs.jti)) return null
   if (rs.jti && (await kvGet(env, `sess:${rs.jti}`))) return null
   return rs
 }

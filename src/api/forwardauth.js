@@ -21,19 +21,24 @@ function headerSafe(value) {
   return String(value ?? '').replace(/[\r\n]+/g, ' ').trim()
 }
 
-function publicOrigin(request) {
-  const proto = (request.headers.get('x-forwarded-proto') || 'http').split(',')[0].trim()
-  const host = (request.headers.get('x-forwarded-host') || request.headers.get('host') || '')
-    .split(',')[0]
+function publicOrigin(request, env) {
+  const fwdProto = (request.headers.get('x-forwarded-proto') || '').split(',')[0].trim()
+  const fwdHost = (request.headers.get('x-forwarded-host') || '').split(',')[0].trim()
+  if (fwdProto || fwdHost) {
+    const url = new URL(request.url)
+    return `${fwdProto || url.protocol.replace(':', '')}://${fwdHost || url.host}`
+  }
+  const configured = String(env?.XID_PUBLIC_URL || process.env.XID_PUBLIC_URL || '')
     .trim()
-  return host ? `${proto}://${host}` : new URL(request.url).origin
+    .replace(/\/+$/, '')
+  return configured || new URL(request.url).origin
 }
 
 function loginRedirect(env, request) {
   const base = env.XID_LOGIN_URL || process.env.XID_LOGIN_URL || '/login'
   let target
   try {
-    target = new URL(base, publicOrigin(request))
+    target = new URL(base, publicOrigin(request, env))
   } catch {
     return null
   }
